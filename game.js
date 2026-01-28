@@ -124,12 +124,12 @@ let bloomPass = null;
 let renderPass = null;
 const BLOOM_CONFIG = {
     enabled: true,
-    strength: 0.8,
-    radius: 0.4,
-    threshold: 0.6,
+    strength: 0.3,
+    radius: 0.3,
+    threshold: 0.85,
     // Impact bloom spike settings
-    impactStrength: 2.5,
-    impactDuration: 150,
+    impactStrength: 1.0,
+    impactDuration: 100,
     currentImpactTime: 0,
     isImpacting: false
 };
