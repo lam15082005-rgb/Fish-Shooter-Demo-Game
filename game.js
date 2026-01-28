@@ -670,48 +670,68 @@ function applyFireballScreenShake() {
 
 // Initialize fireball pool
 function initFireballPool() {
-    if (!scene) return;
-    
-    // Initialize THREE.js objects that couldn't be created at script parse time
-    // (THREE.js loads after this script via CDN)
-    SCREEN_SHAKE_CONFIG.offset = new THREE.Vector3();
-    FIREBALL_CONFIG.colors = {
-        coreHot: new THREE.Color(1.0, 1.0, 0.8),
-        coreEdge: new THREE.Color(1.0, 0.4, 0.1),
-        trailHot: new THREE.Color(1.0, 0.8, 0.3),
-        trailCool: new THREE.Color(0.8, 0.2, 0.0),
-        explosion: new THREE.Color(1.0, 0.5, 0.1)
-    };
-    
-    for (let i = 0; i < FIREBALL_POOL_SIZE; i++) {
-        const fireball = new FireballSpell();
-        scene.add(fireball.group);
-        fireballPool.push(fireball);
+    if (!scene) {
+        console.error('[FIREBALL] initFireballPool failed: scene is not defined');
+        return;
     }
-    console.log(`Fireball pool initialized with ${FIREBALL_POOL_SIZE} fireballs`);
+    
+    try {
+        // Initialize THREE.js objects that couldn't be created at script parse time
+        // (THREE.js loads after this script via CDN)
+        SCREEN_SHAKE_CONFIG.offset = new THREE.Vector3();
+        FIREBALL_CONFIG.colors = {
+            coreHot: new THREE.Color(1.0, 1.0, 0.8),
+            coreEdge: new THREE.Color(1.0, 0.4, 0.1),
+            trailHot: new THREE.Color(1.0, 0.8, 0.3),
+            trailCool: new THREE.Color(0.8, 0.2, 0.0),
+            explosion: new THREE.Color(1.0, 0.5, 0.1)
+        };
+        
+        for (let i = 0; i < FIREBALL_POOL_SIZE; i++) {
+            const fireball = new FireballSpell();
+            scene.add(fireball.group);
+            fireballPool.push(fireball);
+        }
+        console.log(`[FIREBALL] Pool initialized with ${fireballPool.length} fireballs`);
+    } catch (error) {
+        console.error('[FIREBALL] initFireballPool failed:', error);
+    }
 }
 
 // Get fireball from pool
 function getFireballFromPool() {
+    if (fireballPool.length === 0) {
+        console.warn('[FIREBALL] Pool is empty - was initFireballPool() called?');
+        return null;
+    }
     for (const fireball of fireballPool) {
         if (!fireball.isActive) {
             return fireball;
         }
     }
-    // Pool exhausted, return null (will fall back to regular bullet)
+    console.warn('[FIREBALL] All fireballs in use, pool exhausted');
     return null;
 }
 
 // Fire a fireball (called from weapon system)
+// Returns true if fired successfully (fireball or fallback bullet), false if failed
 function fireFireball(origin, direction, weaponKey) {
     const fireball = getFireballFromPool();
-    if (!fireball) return null;
+    if (!fireball) {
+        // Fallback: fire a regular bullet instead so 3x weapon still works
+        console.warn('[FIREBALL] Falling back to regular bullet for 3x weapon');
+        if (typeof spawnBulletFromDirection === 'function') {
+            spawnBulletFromDirection(origin, direction, weaponKey);
+            return true;
+        }
+        return false;
+    }
     
     fireball.fire(origin, direction, weaponKey);
     if (!activeFireballs.includes(fireball)) {
         activeFireballs.push(fireball);
     }
-    return fireball;
+    return true;
 }
 
 // Update all active fireballs
