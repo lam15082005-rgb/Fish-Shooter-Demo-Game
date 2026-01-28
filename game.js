@@ -675,6 +675,11 @@ function initFireballPool() {
         return;
     }
     
+    if (typeof THREE === 'undefined') {
+        console.error('[FIREBALL] initFireballPool failed: THREE.js is not loaded');
+        return;
+    }
+    
     try {
         // Initialize THREE.js objects that couldn't be created at script parse time
         // (THREE.js loads after this script via CDN)
@@ -686,15 +691,31 @@ function initFireballPool() {
             trailCool: new THREE.Color(0.8, 0.2, 0.0),
             explosion: new THREE.Color(1.0, 0.5, 0.1)
         };
+        console.log('[FIREBALL] Colors initialized:', FIREBALL_CONFIG.colors);
         
         for (let i = 0; i < FIREBALL_POOL_SIZE; i++) {
             const fireball = new FireballSpell();
+            if (typeof fireball.fire !== 'function') {
+                console.error(`[FIREBALL] Created fireball ${i} is missing fire method! Constructor: ${fireball.constructor ? fireball.constructor.name : 'unknown'}`);
+            }
             scene.add(fireball.group);
             fireballPool.push(fireball);
         }
         console.log(`[FIREBALL] Pool initialized with ${fireballPool.length} fireballs`);
+        
+        // Verify first fireball has required methods
+        if (fireballPool.length > 0) {
+            const testFireball = fireballPool[0];
+            console.log('[FIREBALL] First fireball verification:', {
+                hasFire: typeof testFireball.fire === 'function',
+                hasUpdate: typeof testFireball.update === 'function',
+                hasImpact: typeof testFireball.impact === 'function',
+                constructor: testFireball.constructor ? testFireball.constructor.name : 'unknown'
+            });
+        }
     } catch (error) {
         console.error('[FIREBALL] initFireballPool failed:', error);
+        console.error('[FIREBALL] Stack trace:', error.stack);
     }
 }
 
@@ -717,9 +738,13 @@ function getFireballFromPool() {
 // Returns true if fired successfully (fireball or fallback bullet), false if failed
 function fireFireball(origin, direction, weaponKey) {
     const fireball = getFireballFromPool();
-    if (!fireball) {
+    if (!fireball || typeof fireball.fire !== 'function') {
         // Fallback: fire a regular bullet instead so 3x weapon still works
-        console.warn('[FIREBALL] Falling back to regular bullet for 3x weapon');
+        if (!fireball) {
+            console.warn('[FIREBALL] No fireball available, falling back to regular bullet');
+        } else {
+            console.error('[FIREBALL] Fireball object missing fire method! Object:', fireball, 'Constructor:', fireball.constructor ? fireball.constructor.name : 'unknown');
+        }
         if (typeof spawnBulletFromDirection === 'function') {
             spawnBulletFromDirection(origin, direction, weaponKey);
             return true;
