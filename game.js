@@ -135,17 +135,19 @@ const BLOOM_CONFIG = {
 };
 
 // -------------------- SCREEN SHAKE STATE --------------------
+// NOTE: offset is initialized lazily in initFireballPool() because THREE.js loads after this script
 const SCREEN_SHAKE_CONFIG = {
     intensity: 0,
     maxIntensity: 8,
     decay: 0.92,
-    offset: new THREE.Vector3()
+    offset: null
 };
 
 // -------------------- FIREBALL SYSTEM STATE --------------------
 const fireballPool = [];
 const activeFireballs = [];
 const FIREBALL_POOL_SIZE = 20;
+// NOTE: colors are initialized lazily in initFireballPool() because THREE.js loads after this script
 const FIREBALL_CONFIG = {
     speed: 700,
     maxLifetime: 4,
@@ -153,13 +155,7 @@ const FIREBALL_CONFIG = {
     trailParticleCount: 64,
     trailLength: 120,
     explosionParticleCount: 32,
-    colors: {
-        coreHot: new THREE.Color(1.0, 1.0, 0.8),
-        coreEdge: new THREE.Color(1.0, 0.4, 0.1),
-        trailHot: new THREE.Color(1.0, 0.8, 0.3),
-        trailCool: new THREE.Color(0.8, 0.2, 0.0),
-        explosion: new THREE.Color(1.0, 0.5, 0.1)
-    }
+    colors: null
 };
 
 // -------------------- FIREBALL TRAIL CLASS --------------------
@@ -675,6 +671,17 @@ function applyFireballScreenShake() {
 // Initialize fireball pool
 function initFireballPool() {
     if (!scene) return;
+    
+    // Initialize THREE.js objects that couldn't be created at script parse time
+    // (THREE.js loads after this script via CDN)
+    SCREEN_SHAKE_CONFIG.offset = new THREE.Vector3();
+    FIREBALL_CONFIG.colors = {
+        coreHot: new THREE.Color(1.0, 1.0, 0.8),
+        coreEdge: new THREE.Color(1.0, 0.4, 0.1),
+        trailHot: new THREE.Color(1.0, 0.8, 0.3),
+        trailCool: new THREE.Color(0.8, 0.2, 0.0),
+        explosion: new THREE.Color(1.0, 0.5, 0.1)
+    };
     
     for (let i = 0; i < FIREBALL_POOL_SIZE; i++) {
         const fireball = new FireballSpell();
