@@ -5232,10 +5232,34 @@ function updateFireballVFX(deltaTime) {
             fireball.frameTime = 0;
         }
         
-        // Billboard rotation
+        // Orient fireball to point toward travel direction
         if (camera) {
-            fireball.coreMesh.quaternion.copy(camera.quaternion);
-            fireball.coreMesh.rotateZ(performance.now() * 0.001 * config.projectile.billboardRotationSpeed);
+            // Calculate rotation to align fireball with velocity direction
+            // The fireball sprite should have its "head" pointing in the +Y direction in local space
+            const up = new THREE.Vector3(0, 1, 0);
+            const velocityDir = fireball.velocity.clone().normalize();
+            
+            // Create a quaternion that rotates from up to velocity direction
+            const quaternion = new THREE.Quaternion();
+            quaternion.setFromUnitVectors(up, velocityDir);
+            
+            // Apply the rotation to the fireball mesh
+            fireball.coreMesh.quaternion.copy(quaternion);
+            
+            // Make it face the camera (billboard) while maintaining direction
+            // Get the camera's right vector to create a proper billboard effect
+            const cameraDir = new THREE.Vector3();
+            camera.getWorldDirection(cameraDir);
+            
+            // Calculate the angle to rotate around the velocity axis to face camera
+            const toCamera = camera.position.clone().sub(fireball.position).normalize();
+            const right = new THREE.Vector3().crossVectors(velocityDir, toCamera).normalize();
+            const forward = new THREE.Vector3().crossVectors(right, velocityDir).normalize();
+            
+            // Build rotation matrix from axes
+            const rotMatrix = new THREE.Matrix4();
+            rotMatrix.makeBasis(right, velocityDir, forward);
+            fireball.coreMesh.quaternion.setFromRotationMatrix(rotMatrix);
         }
         
         // Update trail
