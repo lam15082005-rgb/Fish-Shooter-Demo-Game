@@ -41,16 +41,23 @@ const FIREBALL_CORE_FRAG = `
     void main() {
         // Fresnel effect for hot center, cooler edges
         vec3 viewDir = normalize(vViewPosition);
-        float fresnel = pow(1.0 - abs(dot(vNormal, viewDir)), 2.0);
+        float fresnel = pow(1.0 - abs(dot(vNormal, viewDir)), 1.5);
         
-        // Animate color intensity
-        float flicker = 0.9 + 0.1 * sin(uTime * 15.0 + fresnel * 10.0);
+        // Animate color intensity with multiple frequencies for organic look
+        float flicker1 = 0.85 + 0.15 * sin(uTime * 12.0 + fresnel * 8.0);
+        float flicker2 = 0.9 + 0.1 * sin(uTime * 20.0 + fresnel * 15.0);
+        float flicker = flicker1 * flicker2;
         
         // Blend from hot core (white/yellow) to cooler edge (orange/red)
         vec3 color = mix(uCoreColor, uEdgeColor, fresnel);
+        
+        // Add extra brightness at center
+        float centerGlow = 1.0 - fresnel;
+        color += uCoreColor * centerGlow * 0.5;
+        
         color *= uIntensity * flicker;
         
-        // Add bloom-friendly high values
+        // Strong bloom-friendly high values for AAA glow
         gl_FragColor = vec4(color, 1.0);
     }
 `;
@@ -75,13 +82,13 @@ const FIREBALL_TRAIL_VERT = `
         // Calculate normalized age (0 = new, 1 = dead)
         float normalizedAge = aAge / aLifetime;
         
-        // Fade out size over lifetime
-        float sizeFade = 1.0 - normalizedAge;
+        // Fade out size over lifetime with easing
+        float sizeFade = 1.0 - normalizedAge * normalizedAge;
         float size = aSize * uBaseSize * sizeFade;
         
         // Position is updated by the trail system, not here
         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = size * (300.0 / -mvPosition.z);
+        gl_PointSize = size * (500.0 / -mvPosition.z);  // Larger base size
         gl_Position = projectionMatrix * mvPosition;
     }
 `;
@@ -96,23 +103,24 @@ const FIREBALL_TRAIL_FRAG = `
     varying float vLifetime;
     
     void main() {
-        // Circular particle shape
+        // Circular particle shape with soft glow
         vec2 center = gl_PointCoord - vec2(0.5);
         float dist = length(center);
         if (dist > 0.5) discard;
         
-        // Soft edge
-        float alpha = 1.0 - smoothstep(0.3, 0.5, dist);
+        // Soft glowing edge
+        float alpha = 1.0 - smoothstep(0.0, 0.5, dist);
+        alpha = pow(alpha, 0.5);  // Softer falloff for glow effect
         
         // Age-based color: hot (young) to cool (old)
         float normalizedAge = vAge / vLifetime;
         vec3 color = mix(uHotColor, uCoolColor, normalizedAge);
         
-        // Fade out over lifetime
-        alpha *= 1.0 - normalizedAge;
+        // Fade out over lifetime with easing
+        alpha *= pow(1.0 - normalizedAge, 0.5);
         
-        // Boost for bloom
-        color *= 2.0;
+        // Strong boost for bloom - AAA quality glow
+        color *= 4.0;
         
         gl_FragColor = vec4(color, alpha);
     }
@@ -124,12 +132,12 @@ let bloomPass = null;
 let renderPass = null;
 const BLOOM_CONFIG = {
     enabled: true,
-    strength: 0.3,
-    radius: 0.3,
-    threshold: 0.85,
+    strength: 0.6,      // Balanced bloom - visible but not overwhelming
+    radius: 0.4,        // Moderate bloom spread
+    threshold: 0.7,     // Higher threshold = bloom only on very bright objects
     // Impact bloom spike settings
-    impactStrength: 1.0,
-    impactDuration: 100,
+    impactStrength: 1.5,  // Noticeable flash on impact
+    impactDuration: 120,  // Moderate flash duration
     currentImpactTime: 0,
     isImpacting: false
 };
@@ -138,8 +146,8 @@ const BLOOM_CONFIG = {
 // NOTE: offset is initialized lazily in initFireballPool() because THREE.js loads after this script
 const SCREEN_SHAKE_CONFIG = {
     intensity: 0,
-    maxIntensity: 8,
-    decay: 0.92,
+    maxIntensity: 15,    // Stronger shake for more impact
+    decay: 0.88,         // Slower decay for longer shake
     offset: null
 };
 
@@ -149,12 +157,12 @@ const activeFireballs = [];
 const FIREBALL_POOL_SIZE = 20;
 // NOTE: colors are initialized lazily in initFireballPool() because THREE.js loads after this script
 const FIREBALL_CONFIG = {
-    speed: 700,
-    maxLifetime: 4,
-    coreRadius: 8,
-    trailParticleCount: 64,
-    trailLength: 120,
-    explosionParticleCount: 32,
+    speed: 600,              // Slightly slower for more visible travel
+    maxLifetime: 5,          // Longer lifetime
+    coreRadius: 20,          // MUCH larger core for AAA visibility
+    trailParticleCount: 128, // More particles for denser trail
+    trailLength: 200,        // Longer trail
+    explosionParticleCount: 64, // More explosion sparks
     colors: null
 };
 
@@ -187,13 +195,13 @@ function FireballTrail() {
     this.geometry.setAttribute('aVelocity', new THREE.BufferAttribute(this.velocities, 3));
     this.geometry.setAttribute('aSize', new THREE.BufferAttribute(this.sizes, 1));
     
-    // Create shader material
+    // Create shader material - larger base size for AAA quality
     this.material = new THREE.ShaderMaterial({
         vertexShader: FIREBALL_TRAIL_VERT,
         fragmentShader: FIREBALL_TRAIL_FRAG,
         uniforms: {
             uTime: { value: 0 },
-            uBaseSize: { value: 12 },
+            uBaseSize: { value: 25 },
             uHotColor: { value: FIREBALL_CONFIG.colors.trailHot },
             uCoolColor: { value: FIREBALL_CONFIG.colors.trailCool }
         },
@@ -278,10 +286,10 @@ function FireballExplosion() {
     this.particleCount = FIREBALL_CONFIG.explosionParticleCount;
     this.isActive = false;
     this.lifetime = 0;
-    this.maxLifetime = 0.5;
+    this.maxLifetime = 0.8;
     
-    // Create instanced mesh for sparks
-    var sparkGeometry = new THREE.SphereGeometry(2, 4, 4);
+    // Create instanced mesh for sparks - larger for AAA impact
+    var sparkGeometry = new THREE.SphereGeometry(5, 6, 6);
     var sparkMaterial = new THREE.MeshBasicMaterial({
         color: FIREBALL_CONFIG.colors.explosion,
         transparent: true,
@@ -309,12 +317,12 @@ FireballExplosion.prototype.trigger = function(position) {
     this.lifetime = 0;
     this.mesh.visible = true;
     
-    // Initialize particles with radial outward velocities
+    // Initialize particles with radial outward velocities - faster for AAA impact
     for (var i = 0; i < this.particleCount; i++) {
         // Random direction on sphere
         var theta = Math.random() * Math.PI * 2;
         var phi = Math.acos(2 * Math.random() - 1);
-        var speed = 150 + Math.random() * 100;
+        var speed = 250 + Math.random() * 200;
         
         this.velocities[i].set(
             Math.sin(phi) * Math.cos(theta) * speed,
@@ -404,11 +412,11 @@ function FireballSpell() {
         fragmentShader: FIREBALL_CORE_FRAG,
         uniforms: {
             uTime: { value: 0 },
-            uPulseSpeed: { value: 8.0 },
-            uPulseAmount: { value: 0.15 },
+            uPulseSpeed: { value: 10.0 },
+            uPulseAmount: { value: 0.2 },
             uCoreColor: { value: FIREBALL_CONFIG.colors.coreHot },
             uEdgeColor: { value: FIREBALL_CONFIG.colors.coreEdge },
-            uIntensity: { value: 2.5 }
+            uIntensity: { value: 4.0 }
         },
         transparent: true,
         blending: THREE.AdditiveBlending
@@ -417,17 +425,17 @@ function FireballSpell() {
     this.core = new THREE.Mesh(coreGeometry, this.coreMaterial);
     this.core.visible = false;
     
-    // Create glow sprite for extra bloom
+    // Create glow sprite for extra bloom - large for AAA cinematic effect
     var glowTexture = createFireballGlowTexture();
     this.glowMaterial = new THREE.SpriteMaterial({
         map: glowTexture,
         color: 0xff6600,
         transparent: true,
         blending: THREE.AdditiveBlending,
-        opacity: 0.6
+        opacity: 0.8
     });
     this.glow = new THREE.Sprite(this.glowMaterial);
-    this.glow.scale.set(50, 50, 1);
+    this.glow.scale.set(120, 120, 1);
     this.glow.visible = false;
     
     // Create trail
