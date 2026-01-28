@@ -4625,6 +4625,845 @@ function updateFireParticles(deltaTime) {
 }
 
 
+// ==================== 5X WEAPON FIREBALL VFX SYSTEM ====================
+// Unity/Unreal-quality projectile VFX with flipbook animations, trails, sparks,
+// impact effects, bloom, tone mapping, camera shake, and localized distortion
+// This replaces the standard bullet for the 5x weapon
+
+const FIREBALL_VFX_CONFIG = {
+    enabled: true,
+    assetPath: 'assets/vfx/',
+    textures: {
+        coreProjectile: 'CoreProjectile.png',  // 32-frame flipbook (6x6 grid)
+        explosion: 'explosion.png',             // 32-frame impact flipbook (6x6 grid)
+        noise: 'noise.png',                     // Trail noise texture
+        spark: 'spark.png'                      // Spark flipbook (5x4 grid)
+    },
+    flipbook: {
+        coreFrames: 32,
+        coreCols: 6,
+        coreRows: 6,
+        impactFrames: 32,
+        impactCols: 6,
+        impactRows: 6,
+        sparkFrames: 20,
+        sparkCols: 5,
+        sparkRows: 4,
+        fps: 30
+    },
+    projectile: {
+        size: 60,
+        billboardRotationSpeed: 0.5
+    },
+    trail: {
+        maxPoints: 30,
+        width: 25,
+        fadeSpeed: 3.0,
+        noiseScale: 0.15,
+        noiseSpeed: 2.0,
+        turbulenceStrength: 8
+    },
+    sparks: {
+        burstCount: 15,
+        trailEmitRate: 0.02,
+        lifetime: 0.4,
+        size: 8,
+        speed: 150,
+        gravity: 200
+    },
+    impact: {
+        size: 120,
+        duration: 1.0,
+        scaleUp: 1.5,
+        sparkBurstCount: 25
+    },
+    postProcessing: {
+        bloomThreshold: 0.6,
+        bloomStrength: 1.2,
+        bloomRadius: 0.5,
+        exposure: 1.1,
+        warmBias: 0.1
+    },
+    cameraShake: {
+        impactStrength: 0.15,
+        impactDuration: 0.2,
+        dampingFactor: 0.9
+    },
+    distortion: {
+        enabled: true,
+        radius: 0.08,
+        strength: 0.02,
+        noiseScale: 3.0,
+        fadeDistance: 500
+    }
+};
+
+// Fireball VFX state
+const fireballVFXState = {
+    initialized: false,
+    textures: {
+        coreProjectile: null,
+        explosion: null,
+        noise: null,
+        spark: null
+    },
+    texturesLoaded: false,
+    activeFireballs: [],
+    activeImpacts: [],
+    activeSparks: [],
+    trailGeometryCache: null,
+    sparkGeometry: null,
+    composer: null,
+    bloomPass: null,
+    distortionPass: null,
+    cameraShakeState: {
+        active: false,
+        intensity: 0,
+        offset: new THREE.Vector3()
+    },
+    distortionUniforms: null
+};
+
+// Load fireball VFX textures
+async function loadFireballVFXTextures() {
+    if (fireballVFXState.texturesLoaded) return;
+    
+    const textureLoader = new THREE.TextureLoader();
+    const config = FIREBALL_VFX_CONFIG;
+    
+    const loadTexture = (key) => {
+        return new Promise((resolve) => {
+            const url = config.assetPath + config.textures[key];
+            textureLoader.load(url,
+                (texture) => {
+                    texture.wrapS = THREE.RepeatWrapping;
+                    texture.wrapT = THREE.RepeatWrapping;
+                    texture.minFilter = THREE.LinearFilter;
+                    texture.magFilter = THREE.LinearFilter;
+                    fireballVFXState.textures[key] = texture;
+                    console.log(`[FIREBALL-VFX] Loaded texture: ${key}`);
+                    resolve(texture);
+                },
+                undefined,
+                (error) => {
+                    console.warn(`[FIREBALL-VFX] Failed to load texture ${key}:`, error);
+                    resolve(null);
+                }
+            );
+        });
+    };
+    
+    await Promise.all([
+        loadTexture('coreProjectile'),
+        loadTexture('explosion'),
+        loadTexture('noise'),
+        loadTexture('spark')
+    ]);
+    
+    fireballVFXState.texturesLoaded = true;
+    console.log('[FIREBALL-VFX] All textures loaded');
+    
+    initFireballVFXSystem();
+}
+
+// Initialize fireball VFX system
+function initFireballVFXSystem() {
+    if (fireballVFXState.initialized) return;
+    
+    // Create shared geometries
+    fireballVFXState.sparkGeometry = new THREE.PlaneGeometry(1, 1);
+    
+    // Initialize post-processing if renderer exists
+    if (renderer && scene && camera) {
+        initFireballPostProcessing();
+    }
+    
+    fireballVFXState.initialized = true;
+    console.log('[FIREBALL-VFX] System initialized');
+}
+
+// Initialize post-processing for fireball effects
+function initFireballPostProcessing() {
+    // Check if EffectComposer is available (loaded from Three.js examples)
+    if (typeof THREE.EffectComposer === 'undefined') {
+        console.warn('[FIREBALL-VFX] EffectComposer not available, skipping post-processing setup');
+        return;
+    }
+    
+    const config = FIREBALL_VFX_CONFIG.postProcessing;
+    
+    // Create effect composer
+    fireballVFXState.composer = new THREE.EffectComposer(renderer);
+    
+    // Add render pass
+    const renderPass = new THREE.RenderPass(scene, camera);
+    fireballVFXState.composer.addPass(renderPass);
+    
+    // Add UnrealBloomPass for fire highlights
+    if (typeof THREE.UnrealBloomPass !== 'undefined') {
+        fireballVFXState.bloomPass = new THREE.UnrealBloomPass(
+            new THREE.Vector2(window.innerWidth, window.innerHeight),
+            config.bloomStrength,
+            config.bloomRadius,
+            config.bloomThreshold
+        );
+        fireballVFXState.composer.addPass(fireballVFXState.bloomPass);
+    }
+    
+    // Create localized distortion shader pass
+    createDistortionShaderPass();
+    
+    // Set tone mapping
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = config.exposure;
+    
+    console.log('[FIREBALL-VFX] Post-processing initialized');
+}
+
+// Create localized screen-space heat distortion shader
+function createDistortionShaderPass() {
+    if (typeof THREE.ShaderPass === 'undefined') {
+        console.warn('[FIREBALL-VFX] ShaderPass not available');
+        return;
+    }
+    
+    const distortionShader = {
+        uniforms: {
+            tDiffuse: { value: null },
+            tNoise: { value: fireballVFXState.textures.noise },
+            uTime: { value: 0 },
+            uDistortionStrength: { value: FIREBALL_VFX_CONFIG.distortion.strength },
+            uNoiseScale: { value: FIREBALL_VFX_CONFIG.distortion.noiseScale },
+            uProjectilePositions: { value: [] },
+            uProjectileCount: { value: 0 },
+            uDistortionRadius: { value: FIREBALL_VFX_CONFIG.distortion.radius },
+            uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) }
+        },
+        vertexShader: `
+            varying vec2 vUv;
+            void main() {
+                vUv = uv;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform sampler2D tDiffuse;
+            uniform sampler2D tNoise;
+            uniform float uTime;
+            uniform float uDistortionStrength;
+            uniform float uNoiseScale;
+            uniform vec2 uProjectilePositions[10];
+            uniform int uProjectileCount;
+            uniform float uDistortionRadius;
+            uniform vec2 uResolution;
+            
+            varying vec2 vUv;
+            
+            void main() {
+                vec2 uv = vUv;
+                vec2 totalOffset = vec2(0.0);
+                
+                // Apply localized distortion around each projectile
+                for (int i = 0; i < 10; i++) {
+                    if (i >= uProjectileCount) break;
+                    
+                    vec2 projPos = uProjectilePositions[i];
+                    float dist = distance(uv, projPos);
+                    
+                    if (dist < uDistortionRadius) {
+                        // Sample noise texture for UV offset
+                        vec2 noiseUV = uv * uNoiseScale + vec2(uTime * 0.5, uTime * 0.3);
+                        vec4 noise = texture2D(tNoise, noiseUV);
+                        
+                        // Calculate falloff (stronger at center, fades at edges)
+                        float falloff = 1.0 - smoothstep(0.0, uDistortionRadius, dist);
+                        falloff = falloff * falloff; // Quadratic falloff for smoother edges
+                        
+                        // Apply distortion offset
+                        vec2 offset = (noise.rg - 0.5) * 2.0 * uDistortionStrength * falloff;
+                        totalOffset += offset;
+                    }
+                }
+                
+                // Sample scene with distorted UVs
+                vec4 color = texture2D(tDiffuse, uv + totalOffset);
+                
+                // Apply subtle warm color bias for fire effect
+                color.r *= 1.02;
+                color.g *= 1.0;
+                color.b *= 0.98;
+                
+                gl_FragColor = color;
+            }
+        `
+    };
+    
+    fireballVFXState.distortionUniforms = distortionShader.uniforms;
+    
+    if (fireballVFXState.composer) {
+        fireballVFXState.distortionPass = new THREE.ShaderPass(distortionShader);
+        fireballVFXState.composer.addPass(fireballVFXState.distortionPass);
+    }
+}
+
+// Flipbook material for animated sprites
+function createFlipbookMaterial(texture, cols, rows, totalFrames) {
+    const material = new THREE.ShaderMaterial({
+        uniforms: {
+            uTexture: { value: texture },
+            uFrame: { value: 0 },
+            uCols: { value: cols },
+            uRows: { value: rows },
+            uTotalFrames: { value: totalFrames },
+            uOpacity: { value: 1.0 },
+            uScale: { value: 1.0 },
+            uColor: { value: new THREE.Color(1, 1, 1) }
+        },
+        vertexShader: `
+            uniform float uScale;
+            varying vec2 vUv;
+            void main() {
+                vUv = uv;
+                vec3 pos = position * uScale;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform sampler2D uTexture;
+            uniform float uFrame;
+            uniform float uCols;
+            uniform float uRows;
+            uniform float uTotalFrames;
+            uniform float uOpacity;
+            uniform vec3 uColor;
+            
+            varying vec2 vUv;
+            
+            void main() {
+                float frame = floor(mod(uFrame, uTotalFrames));
+                float col = mod(frame, uCols);
+                float row = floor(frame / uCols);
+                
+                vec2 frameSize = vec2(1.0 / uCols, 1.0 / uRows);
+                vec2 frameOffset = vec2(col * frameSize.x, 1.0 - (row + 1.0) * frameSize.y);
+                vec2 frameUV = frameOffset + vUv * frameSize;
+                
+                vec4 texColor = texture2D(uTexture, frameUV);
+                
+                // Additive blending effect
+                vec3 finalColor = texColor.rgb * uColor * 2.0;
+                float alpha = texColor.a * uOpacity;
+                
+                gl_FragColor = vec4(finalColor, alpha);
+            }
+        `,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide
+    });
+    
+    return material;
+}
+
+// Create fireball projectile for 5x weapon
+function createFireballProjectile(position, direction, weaponKey) {
+    if (!fireballVFXState.texturesLoaded || weaponKey !== '5x') return null;
+    
+    const config = FIREBALL_VFX_CONFIG;
+    const flipbookConfig = config.flipbook;
+    
+    // Create fireball group
+    const fireballGroup = new THREE.Group();
+    fireballGroup.position.copy(position);
+    
+    // Core projectile with flipbook animation
+    const coreGeometry = new THREE.PlaneGeometry(config.projectile.size, config.projectile.size);
+    const coreMaterial = createFlipbookMaterial(
+        fireballVFXState.textures.coreProjectile,
+        flipbookConfig.coreCols,
+        flipbookConfig.coreRows,
+        flipbookConfig.coreFrames
+    );
+    const coreMesh = new THREE.Mesh(coreGeometry, coreMaterial);
+    fireballGroup.add(coreMesh);
+    
+    // Trail ribbon
+    const trailPoints = [];
+    for (let i = 0; i < config.trail.maxPoints; i++) {
+        trailPoints.push(position.clone());
+    }
+    
+    const trailGeometry = new THREE.BufferGeometry();
+    const trailPositions = new Float32Array(config.trail.maxPoints * 6);
+    const trailUVs = new Float32Array(config.trail.maxPoints * 4);
+    const trailIndices = [];
+    
+    for (let i = 0; i < config.trail.maxPoints - 1; i++) {
+        const idx = i * 4;
+        trailIndices.push(idx, idx + 1, idx + 2);
+        trailIndices.push(idx + 1, idx + 3, idx + 2);
+    }
+    
+    trailGeometry.setAttribute('position', new THREE.BufferAttribute(trailPositions, 3));
+    trailGeometry.setAttribute('uv', new THREE.BufferAttribute(trailUVs, 2));
+    trailGeometry.setIndex(trailIndices);
+    
+    const trailMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+            uTexture: { value: fireballVFXState.textures.noise },
+            uTime: { value: 0 },
+            uNoiseScale: { value: config.trail.noiseScale },
+            uColor1: { value: new THREE.Color(0xffaa00) },
+            uColor2: { value: new THREE.Color(0xff4400) }
+        },
+        vertexShader: `
+            attribute vec2 uv;
+            varying vec2 vUv;
+            varying float vAlpha;
+            void main() {
+                vUv = uv;
+                vAlpha = 1.0 - uv.x;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform sampler2D uTexture;
+            uniform float uTime;
+            uniform float uNoiseScale;
+            uniform vec3 uColor1;
+            uniform vec3 uColor2;
+            
+            varying vec2 vUv;
+            varying float vAlpha;
+            
+            void main() {
+                vec2 noiseUV = vUv * uNoiseScale + vec2(uTime * 2.0, 0.0);
+                vec4 noise = texture2D(uTexture, noiseUV);
+                
+                vec3 color = mix(uColor1, uColor2, vUv.x + noise.r * 0.3);
+                float alpha = vAlpha * (0.8 + noise.r * 0.2);
+                alpha *= smoothstep(0.0, 0.1, vUv.y) * smoothstep(1.0, 0.9, vUv.y);
+                
+                gl_FragColor = vec4(color * 2.0, alpha * 0.8);
+            }
+        `,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide
+    });
+    
+    const trailMesh = new THREE.Mesh(trailGeometry, trailMaterial);
+    scene.add(trailMesh);
+    
+    // Create fireball object
+    const fireball = {
+        group: fireballGroup,
+        coreMesh: coreMesh,
+        coreMaterial: coreMaterial,
+        trailMesh: trailMesh,
+        trailGeometry: trailGeometry,
+        trailMaterial: trailMaterial,
+        trailPoints: trailPoints,
+        velocity: direction.clone().normalize().multiplyScalar(CONFIG.weapons['5x'].speed),
+        position: position.clone(),
+        direction: direction.clone().normalize(),
+        lifetime: 4,
+        frameTime: 0,
+        currentFrame: 0,
+        sparkTimer: 0,
+        active: true
+    };
+    
+    scene.add(fireballGroup);
+    fireballVFXState.activeFireballs.push(fireball);
+    
+    // Spawn initial spark burst
+    spawnFireballSparks(position, direction, config.sparks.burstCount * 0.5);
+    
+    return fireball;
+}
+
+// Spawn spark particles
+function spawnFireballSparks(position, direction, count) {
+    if (!fireballVFXState.texturesLoaded) return;
+    
+    const config = FIREBALL_VFX_CONFIG.sparks;
+    const flipbookConfig = FIREBALL_VFX_CONFIG.flipbook;
+    
+    for (let i = 0; i < count; i++) {
+        const sparkGeometry = new THREE.PlaneGeometry(config.size, config.size);
+        const sparkMaterial = createFlipbookMaterial(
+            fireballVFXState.textures.spark,
+            flipbookConfig.sparkCols,
+            flipbookConfig.sparkRows,
+            flipbookConfig.sparkFrames
+        );
+        
+        const sparkMesh = new THREE.Mesh(sparkGeometry, sparkMaterial);
+        sparkMesh.position.copy(position);
+        
+        // Random velocity with bias toward movement direction
+        const velocity = new THREE.Vector3(
+            (Math.random() - 0.5) * config.speed,
+            Math.random() * config.speed * 0.5,
+            (Math.random() - 0.5) * config.speed
+        );
+        if (direction) {
+            velocity.add(direction.clone().multiplyScalar(-config.speed * 0.3));
+        }
+        
+        const spark = {
+            mesh: sparkMesh,
+            material: sparkMaterial,
+            velocity: velocity,
+            lifetime: config.lifetime * (0.5 + Math.random() * 0.5),
+            maxLifetime: config.lifetime,
+            frameTime: Math.random() * 0.5,
+            currentFrame: Math.floor(Math.random() * flipbookConfig.sparkFrames),
+            active: true
+        };
+        
+        scene.add(sparkMesh);
+        fireballVFXState.activeSparks.push(spark);
+    }
+}
+
+// Create impact effect
+function createFireballImpact(position, direction) {
+    if (!fireballVFXState.texturesLoaded) return;
+    
+    const config = FIREBALL_VFX_CONFIG.impact;
+    const flipbookConfig = FIREBALL_VFX_CONFIG.flipbook;
+    
+    // Impact flipbook sprite
+    const impactGeometry = new THREE.PlaneGeometry(config.size, config.size);
+    const impactMaterial = createFlipbookMaterial(
+        fireballVFXState.textures.explosion,
+        flipbookConfig.impactCols,
+        flipbookConfig.impactRows,
+        flipbookConfig.impactFrames
+    );
+    
+    const impactMesh = new THREE.Mesh(impactGeometry, impactMaterial);
+    impactMesh.position.copy(position);
+    
+    const impact = {
+        mesh: impactMesh,
+        material: impactMaterial,
+        position: position.clone(),
+        lifetime: config.duration,
+        maxLifetime: config.duration,
+        frameTime: 0,
+        currentFrame: 0,
+        initialScale: 1.0,
+        active: true
+    };
+    
+    scene.add(impactMesh);
+    fireballVFXState.activeImpacts.push(impact);
+    
+    // Spawn secondary spark burst
+    spawnFireballSparks(position, direction, config.sparkBurstCount);
+    
+    // Trigger camera shake
+    triggerFireballCameraShake();
+    
+    return impact;
+}
+
+// Trigger camera shake on impact
+function triggerFireballCameraShake() {
+    const config = FIREBALL_VFX_CONFIG.cameraShake;
+    fireballVFXState.cameraShakeState.active = true;
+    fireballVFXState.cameraShakeState.intensity = config.impactStrength;
+}
+
+// Update all fireball VFX (called from main animate loop)
+function updateFireballVFX(deltaTime) {
+    if (!fireballVFXState.initialized) return;
+    
+    const config = FIREBALL_VFX_CONFIG;
+    const flipbookConfig = config.flipbook;
+    
+    // Update distortion uniforms
+    if (fireballVFXState.distortionUniforms) {
+        fireballVFXState.distortionUniforms.uTime.value += deltaTime;
+        
+        // Update projectile positions for localized distortion
+        const positions = [];
+        for (const fireball of fireballVFXState.activeFireballs) {
+            if (fireball.active && camera) {
+                // Project 3D position to screen space
+                const screenPos = fireball.position.clone().project(camera);
+                positions.push(new THREE.Vector2(
+                    (screenPos.x + 1) * 0.5,
+                    (screenPos.y + 1) * 0.5
+                ));
+            }
+        }
+        fireballVFXState.distortionUniforms.uProjectilePositions.value = positions;
+        fireballVFXState.distortionUniforms.uProjectileCount.value = positions.length;
+    }
+    
+    // Update active fireballs
+    for (let i = fireballVFXState.activeFireballs.length - 1; i >= 0; i--) {
+        const fireball = fireballVFXState.activeFireballs[i];
+        if (!fireball.active) continue;
+        
+        fireball.lifetime -= deltaTime;
+        if (fireball.lifetime <= 0) {
+            deactivateFireball(fireball);
+            fireballVFXState.activeFireballs.splice(i, 1);
+            continue;
+        }
+        
+        // Update position
+        const movement = fireball.velocity.clone().multiplyScalar(deltaTime);
+        fireball.position.add(movement);
+        fireball.group.position.copy(fireball.position);
+        
+        // Update flipbook animation
+        fireball.frameTime += deltaTime;
+        if (fireball.frameTime >= 1 / flipbookConfig.fps) {
+            fireball.currentFrame = (fireball.currentFrame + 1) % flipbookConfig.coreFrames;
+            fireball.coreMaterial.uniforms.uFrame.value = fireball.currentFrame;
+            fireball.frameTime = 0;
+        }
+        
+        // Billboard rotation
+        if (camera) {
+            fireball.coreMesh.quaternion.copy(camera.quaternion);
+            fireball.coreMesh.rotateZ(performance.now() * 0.001 * config.projectile.billboardRotationSpeed);
+        }
+        
+        // Update trail
+        updateFireballTrail(fireball, deltaTime);
+        
+        // Spawn trailing sparks
+        fireball.sparkTimer += deltaTime;
+        if (fireball.sparkTimer >= config.sparks.trailEmitRate) {
+            spawnFireballSparks(fireball.position, fireball.direction, 1);
+            fireball.sparkTimer = 0;
+        }
+        
+        // Update trail material time
+        fireball.trailMaterial.uniforms.uTime.value += deltaTime;
+    }
+    
+    // Update active impacts
+    for (let i = fireballVFXState.activeImpacts.length - 1; i >= 0; i--) {
+        const impact = fireballVFXState.activeImpacts[i];
+        if (!impact.active) continue;
+        
+        impact.lifetime -= deltaTime;
+        const progress = 1 - (impact.lifetime / impact.maxLifetime);
+        
+        if (impact.lifetime <= 0) {
+            scene.remove(impact.mesh);
+            impact.mesh.geometry.dispose();
+            impact.material.dispose();
+            fireballVFXState.activeImpacts.splice(i, 1);
+            continue;
+        }
+        
+        // Update flipbook animation
+        impact.frameTime += deltaTime;
+        if (impact.frameTime >= 1 / flipbookConfig.fps) {
+            impact.currentFrame = Math.min(impact.currentFrame + 1, flipbookConfig.impactFrames - 1);
+            impact.material.uniforms.uFrame.value = impact.currentFrame;
+            impact.frameTime = 0;
+        }
+        
+        // Scale up and fade out
+        const scale = impact.initialScale * (1 + progress * (config.impact.scaleUp - 1));
+        impact.material.uniforms.uScale.value = scale;
+        impact.material.uniforms.uOpacity.value = 1 - progress * progress;
+        
+        // Billboard
+        if (camera) {
+            impact.mesh.quaternion.copy(camera.quaternion);
+        }
+    }
+    
+    // Update active sparks
+    const sparkConfig = config.sparks;
+    for (let i = fireballVFXState.activeSparks.length - 1; i >= 0; i--) {
+        const spark = fireballVFXState.activeSparks[i];
+        if (!spark.active) continue;
+        
+        spark.lifetime -= deltaTime;
+        const progress = 1 - (spark.lifetime / spark.maxLifetime);
+        
+        if (spark.lifetime <= 0) {
+            scene.remove(spark.mesh);
+            spark.mesh.geometry.dispose();
+            spark.material.dispose();
+            fireballVFXState.activeSparks.splice(i, 1);
+            continue;
+        }
+        
+        // Apply gravity
+        spark.velocity.y -= sparkConfig.gravity * deltaTime;
+        
+        // Update position
+        spark.mesh.position.add(spark.velocity.clone().multiplyScalar(deltaTime));
+        
+        // Update flipbook
+        spark.frameTime += deltaTime;
+        if (spark.frameTime >= 1 / (flipbookConfig.fps * 0.5)) {
+            spark.currentFrame = (spark.currentFrame + 1) % flipbookConfig.sparkFrames;
+            spark.material.uniforms.uFrame.value = spark.currentFrame;
+            spark.frameTime = 0;
+        }
+        
+        // Fade out
+        spark.material.uniforms.uOpacity.value = 1 - progress;
+        
+        // Billboard
+        if (camera) {
+            spark.mesh.quaternion.copy(camera.quaternion);
+        }
+    }
+    
+    // Update camera shake
+    updateFireballCameraShake(deltaTime);
+}
+
+// Update fireball trail ribbon
+function updateFireballTrail(fireball, deltaTime) {
+    const config = FIREBALL_VFX_CONFIG.trail;
+    
+    // Shift trail points
+    for (let i = fireball.trailPoints.length - 1; i > 0; i--) {
+        fireball.trailPoints[i].copy(fireball.trailPoints[i - 1]);
+    }
+    fireball.trailPoints[0].copy(fireball.position);
+    
+    // Update trail geometry
+    const positions = fireball.trailGeometry.attributes.position.array;
+    const uvs = fireball.trailGeometry.attributes.uv.array;
+    
+    for (let i = 0; i < fireball.trailPoints.length; i++) {
+        const point = fireball.trailPoints[i];
+        const t = i / (fireball.trailPoints.length - 1);
+        const width = config.width * (1 - t * 0.7);
+        
+        // Calculate perpendicular direction for ribbon width
+        let perpX = 0, perpY = 1, perpZ = 0;
+        if (i < fireball.trailPoints.length - 1) {
+            const next = fireball.trailPoints[i + 1];
+            const dx = next.x - point.x;
+            const dy = next.y - point.y;
+            const dz = next.z - point.z;
+            const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+            
+            // Cross product with up vector for perpendicular
+            perpX = -dz / len;
+            perpZ = dx / len;
+        }
+        
+        // Add noise-based turbulence
+        const noiseOffset = Math.sin(t * 10 + performance.now() * 0.003) * config.turbulenceStrength * t;
+        
+        const idx = i * 6;
+        positions[idx] = point.x + perpX * width + noiseOffset;
+        positions[idx + 1] = point.y;
+        positions[idx + 2] = point.z + perpZ * width;
+        positions[idx + 3] = point.x - perpX * width - noiseOffset;
+        positions[idx + 4] = point.y;
+        positions[idx + 5] = point.z - perpZ * width;
+        
+        const uvIdx = i * 4;
+        uvs[uvIdx] = t;
+        uvs[uvIdx + 1] = 0;
+        uvs[uvIdx + 2] = t;
+        uvs[uvIdx + 3] = 1;
+    }
+    
+    fireball.trailGeometry.attributes.position.needsUpdate = true;
+    fireball.trailGeometry.attributes.uv.needsUpdate = true;
+}
+
+// Update camera shake
+function updateFireballCameraShake(deltaTime) {
+    const shakeState = fireballVFXState.cameraShakeState;
+    if (!shakeState.active || !camera) return;
+    
+    const config = FIREBALL_VFX_CONFIG.cameraShake;
+    
+    // Apply damping
+    shakeState.intensity *= config.dampingFactor;
+    
+    if (shakeState.intensity < 0.001) {
+        shakeState.active = false;
+        shakeState.offset.set(0, 0, 0);
+        return;
+    }
+    
+    // Random offset
+    shakeState.offset.set(
+        (Math.random() - 0.5) * shakeState.intensity * 50,
+        (Math.random() - 0.5) * shakeState.intensity * 50,
+        (Math.random() - 0.5) * shakeState.intensity * 20
+    );
+    
+    // Apply to camera (will be reset next frame)
+    camera.position.add(shakeState.offset);
+}
+
+// Deactivate and cleanup fireball
+function deactivateFireball(fireball) {
+    fireball.active = false;
+    
+    // Remove from scene
+    scene.remove(fireball.group);
+    scene.remove(fireball.trailMesh);
+    
+    // Dispose geometries and materials
+    fireball.coreMesh.geometry.dispose();
+    fireball.coreMaterial.dispose();
+    fireball.trailGeometry.dispose();
+    fireball.trailMaterial.dispose();
+}
+
+// Handle fireball hit (called when bullet hits fish)
+function handleFireballHit(fireball, hitPosition, hitDirection) {
+    if (!fireball || !fireball.active) return;
+    
+    // Create impact effect at hit position
+    createFireballImpact(hitPosition, hitDirection);
+    
+    // Deactivate the fireball
+    const index = fireballVFXState.activeFireballs.indexOf(fireball);
+    if (index !== -1) {
+        deactivateFireball(fireball);
+        fireballVFXState.activeFireballs.splice(index, 1);
+    }
+}
+
+// Check if fireball VFX should be used for weapon
+function shouldUseFireballVFX(weaponKey) {
+    return FIREBALL_VFX_CONFIG.enabled && 
+           weaponKey === '5x' && 
+           fireballVFXState.texturesLoaded;
+}
+
+// Get active fireball at position (for collision detection)
+function getFireballAtPosition(position, radius) {
+    for (const fireball of fireballVFXState.activeFireballs) {
+        if (fireball.active) {
+            const dist = fireball.position.distanceTo(position);
+            if (dist < radius) {
+                return fireball;
+            }
+        }
+    }
+    return null;
+}
+
+
 // VFX state tracking
 const vfxState = {
     chargeTimer: 0,
@@ -8384,6 +9223,10 @@ async function init() {
         // Load 5x weapon
         updateProgress(55, 'Loading 5x weapon...');
         await preloadWeaponGLB('5x');
+        
+        // 5x weapon fireball VFX textures
+        updateProgress(65, 'Loading 5x fireball VFX...');
+        await loadFireballVFXTextures();
         
         // Load 8x weapon
         updateProgress(80, 'Loading 8x weapon...');
@@ -13820,6 +14663,10 @@ class Bullet {
         const glbConfig = WEAPON_GLB_CONFIG.weapons[weaponKey];
         this.isGrenade = (weapon.type === 'aoe' || weapon.type === 'superAoe');
         
+        // 5X WEAPON FIREBALL VFX: Create fireball projectile instead of standard bullet
+        this.useFireballVFX = shouldUseFireballVFX(weaponKey);
+        this.fireballRef = null;
+        
         this.group.position.copy(origin);
         // COLLISION OPTIMIZATION: Initialize lastPosition for segment-sphere collision
         this.lastPosition.copy(origin);
@@ -13843,42 +14690,53 @@ class Bullet {
         
         this.lifetime = 4;
         this.isActive = true;
-        this.group.visible = true;
         
-        // PERFORMANCE: Synchronous GLB loading from pre-cached pool
-        const glbLoaded = this.loadGLBBulletSync(weaponKey);
-        
-        if (glbLoaded) {
-            // GLB bullet loaded successfully
+        // 5X WEAPON FIREBALL VFX: Use fireball projectile instead of standard bullet visual
+        if (this.useFireballVFX) {
+            this.fireballRef = createFireballProjectile(origin, direction, weaponKey);
+            this.group.visible = false;
             this.proceduralGroup.visible = false;
-            if (this.glbModel) {
-                this.glbModel.visible = true;
-            }
-        } else {
-            // Fallback to procedural bullet
-            this.useGLB = false;
-            this.proceduralGroup.visible = true;
             if (this.glbModel) {
                 this.glbModel.visible = false;
             }
+        } else {
+            this.group.visible = true;
             
-            // Update procedural visual based on weapon
-            this.bullet.material.color.setHex(weapon.color);
-            this.bullet.material.emissive.setHex(weapon.color);
-            this.trail.material.color.setHex(weapon.color);
+            // PERFORMANCE: Synchronous GLB loading from pre-cached pool
+            const glbLoaded = this.loadGLBBulletSync(weaponKey);
             
-            const scale = weapon.size / 8;
-            this.bullet.scale.set(scale, scale, scale);
-            this.trail.scale.set(scale, scale, scale);
-        }
-        
-        // PERFORMANCE: Use temp vector instead of clone() for lookAt
-        bulletTempVectors.lookTarget.copy(this.group.position).add(direction);
-        this.group.lookAt(bulletTempVectors.lookTarget);
-        
-        // Apply rotation fix for GLB models if needed
-        if (this.useGLB && glbConfig && glbConfig.bulletRotationFix) {
-            this.glbModel.rotation.copy(glbConfig.bulletRotationFix);
+            if (glbLoaded) {
+                // GLB bullet loaded successfully
+                this.proceduralGroup.visible = false;
+                if (this.glbModel) {
+                    this.glbModel.visible = true;
+                }
+            } else {
+                // Fallback to procedural bullet
+                this.useGLB = false;
+                this.proceduralGroup.visible = true;
+                if (this.glbModel) {
+                    this.glbModel.visible = false;
+                }
+                
+                // Update procedural visual based on weapon
+                this.bullet.material.color.setHex(weapon.color);
+                this.bullet.material.emissive.setHex(weapon.color);
+                this.trail.material.color.setHex(weapon.color);
+                
+                const scale = weapon.size / 8;
+                this.bullet.scale.set(scale, scale, scale);
+                this.trail.scale.set(scale, scale, scale);
+            }
+            
+            // PERFORMANCE: Use temp vector instead of clone() for lookAt
+            bulletTempVectors.lookTarget.copy(this.group.position).add(direction);
+            this.group.lookAt(bulletTempVectors.lookTarget);
+            
+            // Apply rotation fix for GLB models if needed
+            if (this.useGLB && glbConfig && glbConfig.bulletRotationFix) {
+                this.glbModel.rotation.copy(glbConfig.bulletRotationFix);
+            }
         }
     }
     
@@ -13887,6 +14745,17 @@ class Bullet {
         
         this.lifetime -= deltaTime;
         if (this.lifetime <= 0) {
+            this.deactivate();
+            return;
+        }
+        
+        // 5X WEAPON FIREBALL VFX: Sync bullet position with fireball VFX position
+        if (this.useFireballVFX && this.fireballRef && this.fireballRef.active) {
+            this.group.position.copy(this.fireballRef.position);
+            this.lastPosition.copy(this.fireballRef.position);
+            this.checkFishCollision();
+            return;
+        } else if (this.useFireballVFX && (!this.fireballRef || !this.fireballRef.active)) {
             this.deactivate();
             return;
         }
@@ -14007,16 +14876,24 @@ class Bullet {
                 // HIT SOUND LOGIC: Play hit sound + show hit effect ONLY if fish survives
                 // If fish dies: only coin sound + smoke + coin drop (handled in Fish.die())
                 if (weapon.type === 'chain') {
-                    // Chain lightning: hit first fish, then chain to nearby fish
+                    // Chain lightning (5x weapon): hit first fish, then chain to nearby fish
                     const killed = fish.takeDamage(weapon.damage, this.weaponKey);
                     
                     // Trigger chain lightning effect (always show for visual feedback)
                     triggerChainLightning(fish, this.weaponKey, weapon.damage);
                     
-                    // Only show hit particles and hit effect if fish survived
-                    if (!killed) {
+                    // 5X WEAPON FIREBALL VFX: Trigger fireball impact effect
+                    if (this.useFireballVFX && this.fireballRef) {
+                        handleFireballHit(this.fireballRef, bulletTempVectors.hitPos, bulletTempVectors.bulletDir);
+                        this.fireballRef = null;
+                    }
+                    
+                    // Only show hit particles and hit effect if fish survived (and not using fireball VFX)
+                    if (!killed && !this.useFireballVFX) {
                         createHitParticles(bulletTempVectors.hitPos, weapon.color, 8);
                         spawnWeaponHitEffect(this.weaponKey, bulletTempVectors.hitPos, fish, bulletTempVectors.bulletDir);
+                        playWeaponHitSound(this.weaponKey);
+                    } else if (!killed) {
                         playWeaponHitSound(this.weaponKey);
                     }
                     
@@ -14053,6 +14930,13 @@ class Bullet {
     deactivate() {
         this.isActive = false;
         this.group.visible = false;
+        
+        // 5X WEAPON FIREBALL VFX: Clean up fireball reference
+        if (this.useFireballVFX && this.fireballRef) {
+            handleFireballHit(this.fireballRef, this.group.position, this.velocity.clone().normalize());
+            this.fireballRef = null;
+        }
+        this.useFireballVFX = false;
         
         // PERFORMANCE: Return GLB model to pool for reuse
         if (this.useGLB && this.glbModel) {
@@ -16145,6 +17029,9 @@ function animate() {
     
     // 3X WEAPON FIRE PARTICLES: Update fire trail particles
     updateFireParticles(deltaTime);
+    
+    // 5X WEAPON FIREBALL VFX: Update fireball projectiles, trails, sparks, impacts
+    updateFireballVFX(deltaTime);
     
     // LIGHTNING ARC POOL: Update pooled lightning arc animations
     // PERFORMANCE FIX: Replaces per-arc requestAnimationFrame loops
