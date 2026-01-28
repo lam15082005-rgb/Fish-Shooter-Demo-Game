@@ -6675,6 +6675,153 @@ function spawnWaterSplash(position, size) {
     }
 }
 
+// Spawn bullet explosion effect - called on every bullet-fish collision
+// Creates a visually appealing explosion with expanding core, particles, and ring
+function spawnBulletExplosion(position, color = 0xff6600) {
+    if (!scene) return;
+    
+    // Ensure geometry cache is initialized
+    if (!vfxGeometryCache.sphere) initVfxGeometryCache();
+    
+    // Stage 1: Bright expanding core flash
+    const coreMaterial = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 1,
+        blending: THREE.AdditiveBlending
+    });
+    const core = new THREE.Mesh(vfxGeometryCache.sphere, coreMaterial);
+    core.position.copy(position);
+    core.scale.set(5, 5, 5);
+    scene.add(core);
+    
+    addVfxEffect({
+        type: 'bulletExplosionCore',
+        mesh: core,
+        material: coreMaterial,
+        baseScale: 5,
+        duration: 150,
+        
+        update(dt, elapsed) {
+            const progress = Math.min(elapsed / this.duration, 1);
+            const scale = this.baseScale * (1 + progress * 3);
+            this.mesh.scale.set(scale, scale, scale);
+            this.material.opacity = 1 - progress;
+            return progress < 1;
+        },
+        
+        cleanup() {
+            scene.remove(this.mesh);
+            this.material.dispose();
+        }
+    });
+    
+    // Stage 2: Colored fireball expansion
+    const fireballMaterial = new THREE.MeshBasicMaterial({
+        color: color,
+        transparent: true,
+        opacity: 0.8,
+        blending: THREE.AdditiveBlending
+    });
+    const fireball = new THREE.Mesh(vfxGeometryCache.sphere, fireballMaterial);
+    fireball.position.copy(position);
+    fireball.scale.set(8, 8, 8);
+    scene.add(fireball);
+    
+    addVfxEffect({
+        type: 'bulletExplosionFireball',
+        mesh: fireball,
+        material: fireballMaterial,
+        baseScale: 8,
+        duration: 300,
+        
+        update(dt, elapsed) {
+            const progress = Math.min(elapsed / this.duration, 1);
+            const scale = this.baseScale * (1 + progress * 2.5);
+            this.mesh.scale.set(scale, scale, scale);
+            this.material.opacity = 0.8 * (1 - progress * progress);
+            return progress < 1;
+        },
+        
+        cleanup() {
+            scene.remove(this.mesh);
+            this.material.dispose();
+        }
+    });
+    
+    // Stage 3: Expanding ring
+    spawnExpandingRingOptimized(position, color, 10, 40, 0.25);
+    
+    // Stage 4: Explosion particles flying outward
+    const particleCount = 16;
+    const positions = new Float32Array(particleCount * 3);
+    const velocities = [];
+    
+    for (let i = 0; i < particleCount; i++) {
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.random() * Math.PI;
+        const speed = 80 + Math.random() * 60;
+        
+        positions[i * 3] = position.x;
+        positions[i * 3 + 1] = position.y;
+        positions[i * 3 + 2] = position.z;
+        
+        velocities.push({
+            x: Math.sin(phi) * Math.cos(theta) * speed,
+            y: Math.sin(phi) * Math.sin(theta) * speed,
+            z: Math.cos(phi) * speed
+        });
+    }
+    
+    const particleGeometry = new THREE.BufferGeometry();
+    particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    
+    const particleMaterial = new THREE.PointsMaterial({
+        color: color,
+        size: 6,
+        transparent: true,
+        opacity: 1,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        sizeAttenuation: true
+    });
+    
+    const particles = new THREE.Points(particleGeometry, particleMaterial);
+    scene.add(particles);
+    
+    addVfxEffect({
+        type: 'bulletExplosionParticles',
+        mesh: particles,
+        geometry: particleGeometry,
+        material: particleMaterial,
+        velocities: velocities,
+        duration: 350,
+        
+        update(dt, elapsed) {
+            const progress = Math.min(elapsed / this.duration, 1);
+            const posArray = this.geometry.attributes.position.array;
+            
+            for (let i = 0; i < particleCount; i++) {
+                posArray[i * 3] += this.velocities[i].x * dt;
+                posArray[i * 3 + 1] += this.velocities[i].y * dt;
+                posArray[i * 3 + 2] += this.velocities[i].z * dt;
+            }
+            this.geometry.attributes.position.needsUpdate = true;
+            
+            this.material.opacity = 1 - progress;
+            this.material.size = 6 * (1 - progress * 0.5);
+            
+            return progress < 1;
+        },
+        
+        cleanup() {
+            scene.remove(this.mesh);
+            this.geometry.dispose();
+            this.material.dispose();
+        }
+    });
+}
+
 // Spawn shockwave effect (for 5x weapon) - PARTICLE-BASED VERSION
 // Replaced RingGeometry with expanding particle ring for better visual quality
 function spawnShockwave(position, color, radius) {
@@ -14002,6 +14149,9 @@ class Bullet {
                     );
                 }
                 // For 5x/8x: hitPos from segmentIntersectsSphere is already good (explosion effects)
+                
+                // EXPLOSION VFX: Spawn explosion effect on EVERY bullet-fish collision
+                spawnBulletExplosion(bulletTempVectors.hitPos, weapon.color);
                 
                 // Handle different weapon types
                 // HIT SOUND LOGIC: Play hit sound + show hit effect ONLY if fish survives
