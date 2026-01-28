@@ -158,403 +158,400 @@ const FIREBALL_CONFIG = {
     colors: null
 };
 
-// -------------------- FIREBALL TRAIL CLASS --------------------
+// -------------------- FIREBALL TRAIL CONSTRUCTOR --------------------
 // GPU particle trail using THREE.Points with ShaderMaterial
 // No per-particle JS updates - all animation done in shaders
-class FireballTrail {
-    constructor() {
-        this.particleCount = FIREBALL_CONFIG.trailParticleCount;
-        this.positions = new Float32Array(this.particleCount * 3);
-        this.ages = new Float32Array(this.particleCount);
-        this.lifetimes = new Float32Array(this.particleCount);
-        this.velocities = new Float32Array(this.particleCount * 3);
-        this.sizes = new Float32Array(this.particleCount);
-        this.nextParticleIndex = 0;
-        this.spawnAccumulator = 0;
-        
-        // Initialize all particles as dead (age >= lifetime)
-        for (let i = 0; i < this.particleCount; i++) {
-            this.ages[i] = 1.0;
-            this.lifetimes[i] = 1.0;
-            this.sizes[i] = 1.0;
-        }
-        
-        // Create geometry with attributes
-        this.geometry = new THREE.BufferGeometry();
-        this.geometry.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
-        this.geometry.setAttribute('aAge', new THREE.BufferAttribute(this.ages, 1));
-        this.geometry.setAttribute('aLifetime', new THREE.BufferAttribute(this.lifetimes, 1));
-        this.geometry.setAttribute('aVelocity', new THREE.BufferAttribute(this.velocities, 3));
-        this.geometry.setAttribute('aSize', new THREE.BufferAttribute(this.sizes, 1));
-        
-        // Create shader material
-        this.material = new THREE.ShaderMaterial({
-            vertexShader: FIREBALL_TRAIL_VERT,
-            fragmentShader: FIREBALL_TRAIL_FRAG,
-            uniforms: {
-                uTime: { value: 0 },
-                uBaseSize: { value: 12 },
-                uHotColor: { value: FIREBALL_CONFIG.colors.trailHot },
-                uCoolColor: { value: FIREBALL_CONFIG.colors.trailCool }
-            },
-            transparent: true,
-            blending: THREE.AdditiveBlending,
-            depthWrite: false
-        });
-        
-        this.points = new THREE.Points(this.geometry, this.material);
-        this.points.frustumCulled = false;
+// Using constructor function pattern for better browser compatibility
+function FireballTrail() {
+    this.particleCount = FIREBALL_CONFIG.trailParticleCount;
+    this.positions = new Float32Array(this.particleCount * 3);
+    this.ages = new Float32Array(this.particleCount);
+    this.lifetimes = new Float32Array(this.particleCount);
+    this.velocities = new Float32Array(this.particleCount * 3);
+    this.sizes = new Float32Array(this.particleCount);
+    this.nextParticleIndex = 0;
+    this.spawnAccumulator = 0;
+    
+    // Initialize all particles as dead (age >= lifetime)
+    for (var i = 0; i < this.particleCount; i++) {
+        this.ages[i] = 1.0;
+        this.lifetimes[i] = 1.0;
+        this.sizes[i] = 1.0;
     }
     
-    // Spawn new trail particles at fireball position
-    spawnParticle(position, velocity) {
-        const i = this.nextParticleIndex;
-        this.nextParticleIndex = (this.nextParticleIndex + 1) % this.particleCount;
-        
-        // Set position
-        this.positions[i * 3] = position.x + (Math.random() - 0.5) * 4;
-        this.positions[i * 3 + 1] = position.y + (Math.random() - 0.5) * 4;
-        this.positions[i * 3 + 2] = position.z + (Math.random() - 0.5) * 4;
-        
-        // Set velocity (opposite to fireball direction with spread)
-        const spread = 0.3;
-        this.velocities[i * 3] = -velocity.x * 0.1 + (Math.random() - 0.5) * spread * 50;
-        this.velocities[i * 3 + 1] = -velocity.y * 0.1 + (Math.random() - 0.5) * spread * 50;
-        this.velocities[i * 3 + 2] = -velocity.z * 0.1 + (Math.random() - 0.5) * spread * 50;
-        
-        // Reset age and set lifetime
-        this.ages[i] = 0;
-        this.lifetimes[i] = 0.3 + Math.random() * 0.2;
-        this.sizes[i] = 0.8 + Math.random() * 0.4;
-    }
+    // Create geometry with attributes
+    this.geometry = new THREE.BufferGeometry();
+    this.geometry.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
+    this.geometry.setAttribute('aAge', new THREE.BufferAttribute(this.ages, 1));
+    this.geometry.setAttribute('aLifetime', new THREE.BufferAttribute(this.lifetimes, 1));
+    this.geometry.setAttribute('aVelocity', new THREE.BufferAttribute(this.velocities, 3));
+    this.geometry.setAttribute('aSize', new THREE.BufferAttribute(this.sizes, 1));
     
-    // Update trail particles (minimal JS - just age increment and buffer updates)
-    update(deltaTime, fireballPosition, fireballVelocity, isActive) {
-        // Spawn new particles if fireball is active
-        if (isActive) {
-            this.spawnAccumulator += deltaTime;
-            const spawnInterval = 0.008; // ~125 particles/second
-            while (this.spawnAccumulator >= spawnInterval) {
-                this.spawnParticle(fireballPosition, fireballVelocity);
-                this.spawnAccumulator -= spawnInterval;
-            }
-        }
-        
-        // Update ages and positions (minimal per-particle work)
-        for (let i = 0; i < this.particleCount; i++) {
-            if (this.ages[i] < this.lifetimes[i]) {
-                this.ages[i] += deltaTime;
-                // Move particles by velocity
-                this.positions[i * 3] += this.velocities[i * 3] * deltaTime;
-                this.positions[i * 3 + 1] += this.velocities[i * 3 + 1] * deltaTime;
-                this.positions[i * 3 + 2] += this.velocities[i * 3 + 2] * deltaTime;
-            }
-        }
-        
-        // Update buffer attributes
-        this.geometry.attributes.position.needsUpdate = true;
-        this.geometry.attributes.aAge.needsUpdate = true;
-        this.material.uniforms.uTime.value += deltaTime;
-    }
+    // Create shader material
+    this.material = new THREE.ShaderMaterial({
+        vertexShader: FIREBALL_TRAIL_VERT,
+        fragmentShader: FIREBALL_TRAIL_FRAG,
+        uniforms: {
+            uTime: { value: 0 },
+            uBaseSize: { value: 12 },
+            uHotColor: { value: FIREBALL_CONFIG.colors.trailHot },
+            uCoolColor: { value: FIREBALL_CONFIG.colors.trailCool }
+        },
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+    });
     
-    // Reset all particles (for pooling)
-    reset() {
-        for (let i = 0; i < this.particleCount; i++) {
-            this.ages[i] = this.lifetimes[i] + 1; // Mark as dead
-        }
-        this.geometry.attributes.aAge.needsUpdate = true;
-        this.spawnAccumulator = 0;
-    }
-    
-    dispose() {
-        this.geometry.dispose();
-        this.material.dispose();
-    }
+    this.points = new THREE.Points(this.geometry, this.material);
+    this.points.frustumCulled = false;
 }
 
-// -------------------- FIREBALL EXPLOSION CLASS --------------------
+// Spawn new trail particles at fireball position
+FireballTrail.prototype.spawnParticle = function(position, velocity) {
+    var i = this.nextParticleIndex;
+    this.nextParticleIndex = (this.nextParticleIndex + 1) % this.particleCount;
+    
+    // Set position
+    this.positions[i * 3] = position.x + (Math.random() - 0.5) * 4;
+    this.positions[i * 3 + 1] = position.y + (Math.random() - 0.5) * 4;
+    this.positions[i * 3 + 2] = position.z + (Math.random() - 0.5) * 4;
+    
+    // Set velocity (opposite to fireball direction with spread)
+    var spread = 0.3;
+    this.velocities[i * 3] = -velocity.x * 0.1 + (Math.random() - 0.5) * spread * 50;
+    this.velocities[i * 3 + 1] = -velocity.y * 0.1 + (Math.random() - 0.5) * spread * 50;
+    this.velocities[i * 3 + 2] = -velocity.z * 0.1 + (Math.random() - 0.5) * spread * 50;
+    
+    // Reset age and set lifetime
+    this.ages[i] = 0;
+    this.lifetimes[i] = 0.3 + Math.random() * 0.2;
+    this.sizes[i] = 0.8 + Math.random() * 0.4;
+};
+
+// Update trail particles (minimal JS - just age increment and buffer updates)
+FireballTrail.prototype.update = function(deltaTime, fireballPosition, fireballVelocity, isActive) {
+    // Spawn new particles if fireball is active
+    if (isActive) {
+        this.spawnAccumulator += deltaTime;
+        var spawnInterval = 0.008; // ~125 particles/second
+        while (this.spawnAccumulator >= spawnInterval) {
+            this.spawnParticle(fireballPosition, fireballVelocity);
+            this.spawnAccumulator -= spawnInterval;
+        }
+    }
+    
+    // Update ages and positions (minimal per-particle work)
+    for (var i = 0; i < this.particleCount; i++) {
+        if (this.ages[i] < this.lifetimes[i]) {
+            this.ages[i] += deltaTime;
+            // Move particles by velocity
+            this.positions[i * 3] += this.velocities[i * 3] * deltaTime;
+            this.positions[i * 3 + 1] += this.velocities[i * 3 + 1] * deltaTime;
+            this.positions[i * 3 + 2] += this.velocities[i * 3 + 2] * deltaTime;
+        }
+    }
+    
+    // Update buffer attributes
+    this.geometry.attributes.position.needsUpdate = true;
+    this.geometry.attributes.aAge.needsUpdate = true;
+    this.material.uniforms.uTime.value += deltaTime;
+};
+
+// Reset all particles (for pooling)
+FireballTrail.prototype.reset = function() {
+    for (var i = 0; i < this.particleCount; i++) {
+        this.ages[i] = this.lifetimes[i] + 1; // Mark as dead
+    }
+    this.geometry.attributes.aAge.needsUpdate = true;
+    this.spawnAccumulator = 0;
+};
+
+FireballTrail.prototype.dispose = function() {
+    this.geometry.dispose();
+    this.material.dispose();
+};
+
+// -------------------- FIREBALL EXPLOSION CONSTRUCTOR --------------------
 // InstancedMesh sparks for efficient explosion rendering
-class FireballExplosion {
-    constructor() {
-        this.particleCount = FIREBALL_CONFIG.explosionParticleCount;
-        this.isActive = false;
-        this.lifetime = 0;
-        this.maxLifetime = 0.5;
-        
-        // Create instanced mesh for sparks
-        const sparkGeometry = new THREE.SphereGeometry(2, 4, 4);
-        const sparkMaterial = new THREE.MeshBasicMaterial({
-            color: FIREBALL_CONFIG.colors.explosion,
-            transparent: true,
-            blending: THREE.AdditiveBlending
-        });
-        
-        this.mesh = new THREE.InstancedMesh(sparkGeometry, sparkMaterial, this.particleCount);
-        this.mesh.visible = false;
-        this.mesh.frustumCulled = false;
-        
-        // Store velocities and initial positions
-        this.velocities = [];
-        this.positions = [];
-        this.dummy = new THREE.Object3D();
-        
-        for (let i = 0; i < this.particleCount; i++) {
-            this.velocities.push(new THREE.Vector3());
-            this.positions.push(new THREE.Vector3());
-        }
-    }
+// Using constructor function pattern for better browser compatibility
+function FireballExplosion() {
+    this.particleCount = FIREBALL_CONFIG.explosionParticleCount;
+    this.isActive = false;
+    this.lifetime = 0;
+    this.maxLifetime = 0.5;
     
-    // Trigger explosion at position
-    trigger(position) {
-        this.isActive = true;
-        this.lifetime = 0;
-        this.mesh.visible = true;
-        
-        // Initialize particles with radial outward velocities
-        for (let i = 0; i < this.particleCount; i++) {
-            // Random direction on sphere
-            const theta = Math.random() * Math.PI * 2;
-            const phi = Math.acos(2 * Math.random() - 1);
-            const speed = 150 + Math.random() * 100;
-            
-            this.velocities[i].set(
-                Math.sin(phi) * Math.cos(theta) * speed,
-                Math.sin(phi) * Math.sin(theta) * speed,
-                Math.cos(phi) * speed
-            );
-            
-            this.positions[i].copy(position);
-            
-            // Set initial transform
-            this.dummy.position.copy(position);
-            this.dummy.scale.setScalar(1);
-            this.dummy.updateMatrix();
-            this.mesh.setMatrixAt(i, this.dummy.matrix);
-        }
-        
-        this.mesh.instanceMatrix.needsUpdate = true;
-        
-        // Trigger screen shake
-        triggerFireballScreenShake(SCREEN_SHAKE_CONFIG.maxIntensity);
-        
-        // Trigger bloom spike
-        triggerBloomSpike();
-    }
+    // Create instanced mesh for sparks
+    var sparkGeometry = new THREE.SphereGeometry(2, 4, 4);
+    var sparkMaterial = new THREE.MeshBasicMaterial({
+        color: FIREBALL_CONFIG.colors.explosion,
+        transparent: true,
+        blending: THREE.AdditiveBlending
+    });
     
-    // Update explosion particles
-    update(deltaTime) {
-        if (!this.isActive) return;
-        
-        this.lifetime += deltaTime;
-        
-        if (this.lifetime >= this.maxLifetime) {
-            this.isActive = false;
-            this.mesh.visible = false;
-            return;
-        }
-        
-        const progress = this.lifetime / this.maxLifetime;
-        const scale = 1 - progress; // Shrink over time
-        const opacity = 1 - progress;
-        
-        // Update material opacity
-        this.mesh.material.opacity = opacity;
-        
-        // Update particle positions
-        for (let i = 0; i < this.particleCount; i++) {
-            // Move by velocity with gravity
-            this.positions[i].x += this.velocities[i].x * deltaTime;
-            this.positions[i].y += this.velocities[i].y * deltaTime - 200 * deltaTime * this.lifetime;
-            this.positions[i].z += this.velocities[i].z * deltaTime;
-            
-            // Apply drag
-            this.velocities[i].multiplyScalar(0.98);
-            
-            // Update transform
-            this.dummy.position.copy(this.positions[i]);
-            this.dummy.scale.setScalar(scale * (0.5 + Math.random() * 0.5));
-            this.dummy.updateMatrix();
-            this.mesh.setMatrixAt(i, this.dummy.matrix);
-        }
-        
-        this.mesh.instanceMatrix.needsUpdate = true;
-    }
+    this.mesh = new THREE.InstancedMesh(sparkGeometry, sparkMaterial, this.particleCount);
+    this.mesh.visible = false;
+    this.mesh.frustumCulled = false;
     
-    dispose() {
-        this.mesh.geometry.dispose();
-        this.mesh.material.dispose();
+    // Store velocities and initial positions
+    this.velocities = [];
+    this.positions = [];
+    this.dummy = new THREE.Object3D();
+    
+    for (var i = 0; i < this.particleCount; i++) {
+        this.velocities.push(new THREE.Vector3());
+        this.positions.push(new THREE.Vector3());
     }
 }
 
-// -------------------- FIREBALL SPELL CLASS --------------------
-// Main projectile class combining core, trail, and explosion
-class FireballSpell {
-    constructor() {
+// Trigger explosion at position
+FireballExplosion.prototype.trigger = function(position) {
+    this.isActive = true;
+    this.lifetime = 0;
+    this.mesh.visible = true;
+    
+    // Initialize particles with radial outward velocities
+    for (var i = 0; i < this.particleCount; i++) {
+        // Random direction on sphere
+        var theta = Math.random() * Math.PI * 2;
+        var phi = Math.acos(2 * Math.random() - 1);
+        var speed = 150 + Math.random() * 100;
+        
+        this.velocities[i].set(
+            Math.sin(phi) * Math.cos(theta) * speed,
+            Math.sin(phi) * Math.sin(theta) * speed,
+            Math.cos(phi) * speed
+        );
+        
+        this.positions[i].copy(position);
+        
+        // Set initial transform
+        this.dummy.position.copy(position);
+        this.dummy.scale.setScalar(1);
+        this.dummy.updateMatrix();
+        this.mesh.setMatrixAt(i, this.dummy.matrix);
+    }
+    
+    this.mesh.instanceMatrix.needsUpdate = true;
+    
+    // Trigger screen shake
+    triggerFireballScreenShake(SCREEN_SHAKE_CONFIG.maxIntensity);
+    
+    // Trigger bloom spike
+    triggerBloomSpike();
+};
+
+// Update explosion particles
+FireballExplosion.prototype.update = function(deltaTime) {
+    if (!this.isActive) return;
+    
+    this.lifetime += deltaTime;
+    
+    if (this.lifetime >= this.maxLifetime) {
         this.isActive = false;
-        this.position = new THREE.Vector3();
-        this.direction = new THREE.Vector3();
-        this.velocity = new THREE.Vector3();
-        this.lifetime = 0;
-        this.weaponKey = '3x';
-        this.origin = new THREE.Vector3();
-        this.lastPosition = new THREE.Vector3();
-        
-        // Create fireball core with shader material
-        const coreGeometry = new THREE.SphereGeometry(FIREBALL_CONFIG.coreRadius, 16, 16);
-        this.coreMaterial = new THREE.ShaderMaterial({
-            vertexShader: FIREBALL_CORE_VERT,
-            fragmentShader: FIREBALL_CORE_FRAG,
-            uniforms: {
-                uTime: { value: 0 },
-                uPulseSpeed: { value: 8.0 },
-                uPulseAmount: { value: 0.15 },
-                uCoreColor: { value: FIREBALL_CONFIG.colors.coreHot },
-                uEdgeColor: { value: FIREBALL_CONFIG.colors.coreEdge },
-                uIntensity: { value: 2.5 }
-            },
-            transparent: true,
-            blending: THREE.AdditiveBlending
-        });
-        
-        this.core = new THREE.Mesh(coreGeometry, this.coreMaterial);
-        this.core.visible = false;
-        
-        // Create glow sprite for extra bloom
-        const glowTexture = createFireballGlowTexture();
-        this.glowMaterial = new THREE.SpriteMaterial({
-            map: glowTexture,
-            color: 0xff6600,
-            transparent: true,
-            blending: THREE.AdditiveBlending,
-            opacity: 0.6
-        });
-        this.glow = new THREE.Sprite(this.glowMaterial);
-        this.glow.scale.set(50, 50, 1);
-        this.glow.visible = false;
-        
-        // Create trail
-        this.trail = new FireballTrail();
-        this.trail.points.visible = false;
-        
-        // Create explosion (shared, triggered on impact)
-        this.explosion = new FireballExplosion();
-        
-        // Group for easy scene management
-        this.group = new THREE.Group();
-        this.group.add(this.core);
-        this.group.add(this.glow);
-        this.group.add(this.trail.points);
-        this.group.add(this.explosion.mesh);
+        this.mesh.visible = false;
+        return;
     }
     
-    // Fire the fireball
-    fire(origin, direction, weaponKey) {
-        this.isActive = true;
-        this.lifetime = 0;
-        this.weaponKey = weaponKey || '3x';
+    var progress = this.lifetime / this.maxLifetime;
+    var scale = 1 - progress; // Shrink over time
+    var opacity = 1 - progress;
+    
+    // Update material opacity
+    this.mesh.material.opacity = opacity;
+    
+    // Update particle positions
+    for (var i = 0; i < this.particleCount; i++) {
+        // Move by velocity with gravity
+        this.positions[i].x += this.velocities[i].x * deltaTime;
+        this.positions[i].y += this.velocities[i].y * deltaTime - 200 * deltaTime * this.lifetime;
+        this.positions[i].z += this.velocities[i].z * deltaTime;
         
-        const weapon = CONFIG.weapons[this.weaponKey];
-        const speed = weapon ? weapon.speed : FIREBALL_CONFIG.speed;
+        // Apply drag
+        this.velocities[i].multiplyScalar(0.98);
         
-        this.position.copy(origin);
-        this.origin.copy(origin);
-        this.lastPosition.copy(origin);
-        this.direction.copy(direction).normalize();
-        this.velocity.copy(this.direction).multiplyScalar(speed);
-        
-        // Position and show core
-        this.core.position.copy(origin);
-        this.core.visible = true;
-        this.glow.position.copy(origin);
-        this.glow.visible = true;
-        
-        // Show trail
-        this.trail.reset();
-        this.trail.points.visible = true;
-        
-        // Reset shader time
-        this.coreMaterial.uniforms.uTime.value = 0;
+        // Update transform
+        this.dummy.position.copy(this.positions[i]);
+        this.dummy.scale.setScalar(scale * (0.5 + Math.random() * 0.5));
+        this.dummy.updateMatrix();
+        this.mesh.setMatrixAt(i, this.dummy.matrix);
     }
     
-    // Update fireball position and effects
-    update(deltaTime) {
-        if (!this.isActive) {
-            // Still update explosion if active
-            this.explosion.update(deltaTime);
-            return false;
-        }
-        
-        // Update lifetime
-        this.lifetime += deltaTime;
-        if (this.lifetime >= FIREBALL_CONFIG.maxLifetime) {
-            this.deactivate();
-            return false;
-        }
-        
-        // Store last position for collision detection
-        this.lastPosition.copy(this.position);
-        
-        // Move fireball
-        this.position.x += this.velocity.x * deltaTime;
-        this.position.y += this.velocity.y * deltaTime;
-        this.position.z += this.velocity.z * deltaTime;
-        
-        // Update core position
-        this.core.position.copy(this.position);
-        this.glow.position.copy(this.position);
-        
-        // Update shader uniforms
-        this.coreMaterial.uniforms.uTime.value += deltaTime;
-        
-        // Update trail
-        this.trail.update(deltaTime, this.position, this.velocity, true);
-        
-        // Update explosion (in case it's still playing from previous impact)
-        this.explosion.update(deltaTime);
-        
-        return true;
-    }
+    this.mesh.instanceMatrix.needsUpdate = true;
+};
+
+FireballExplosion.prototype.dispose = function() {
+    this.mesh.geometry.dispose();
+    this.mesh.material.dispose();
+};
+
+// -------------------- FIREBALL SPELL CONSTRUCTOR --------------------
+// Main projectile constructor combining core, trail, and explosion
+// Using constructor function pattern for better browser compatibility
+function FireballSpell() {
+    this.isActive = false;
+    this.position = new THREE.Vector3();
+    this.direction = new THREE.Vector3();
+    this.velocity = new THREE.Vector3();
+    this.lifetime = 0;
+    this.weaponKey = '3x';
+    this.origin = new THREE.Vector3();
+    this.lastPosition = new THREE.Vector3();
     
-    // Trigger impact at current position
-    impact() {
-        if (!this.isActive) return;
-        
-        // Trigger explosion
-        this.explosion.trigger(this.position);
-        
-        // Deactivate fireball
-        this.deactivate();
-    }
+    // Create fireball core with shader material
+    var coreGeometry = new THREE.SphereGeometry(FIREBALL_CONFIG.coreRadius, 16, 16);
+    this.coreMaterial = new THREE.ShaderMaterial({
+        vertexShader: FIREBALL_CORE_VERT,
+        fragmentShader: FIREBALL_CORE_FRAG,
+        uniforms: {
+            uTime: { value: 0 },
+            uPulseSpeed: { value: 8.0 },
+            uPulseAmount: { value: 0.15 },
+            uCoreColor: { value: FIREBALL_CONFIG.colors.coreHot },
+            uEdgeColor: { value: FIREBALL_CONFIG.colors.coreEdge },
+            uIntensity: { value: 2.5 }
+        },
+        transparent: true,
+        blending: THREE.AdditiveBlending
+    });
     
-    // Deactivate fireball (return to pool)
-    deactivate() {
-        this.isActive = false;
-        this.core.visible = false;
-        this.glow.visible = false;
-        this.trail.points.visible = false;
-        this.trail.reset();
-    }
+    this.core = new THREE.Mesh(coreGeometry, this.coreMaterial);
+    this.core.visible = false;
     
-    // Get collision data for fish hit detection
-    getCollisionData() {
-        return {
-            position: this.position,
-            lastPosition: this.lastPosition,
-            origin: this.origin,
-            velocity: this.velocity,
-            weaponKey: this.weaponKey,
-            isActive: this.isActive
-        };
-    }
+    // Create glow sprite for extra bloom
+    var glowTexture = createFireballGlowTexture();
+    this.glowMaterial = new THREE.SpriteMaterial({
+        map: glowTexture,
+        color: 0xff6600,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        opacity: 0.6
+    });
+    this.glow = new THREE.Sprite(this.glowMaterial);
+    this.glow.scale.set(50, 50, 1);
+    this.glow.visible = false;
     
-    dispose() {
-        this.core.geometry.dispose();
-        this.coreMaterial.dispose();
-        this.glowMaterial.dispose();
-        this.trail.dispose();
-        this.explosion.dispose();
-    }
+    // Create trail
+    this.trail = new FireballTrail();
+    this.trail.points.visible = false;
+    
+    // Create explosion (shared, triggered on impact)
+    this.explosion = new FireballExplosion();
+    
+    // Group for easy scene management
+    this.group = new THREE.Group();
+    this.group.add(this.core);
+    this.group.add(this.glow);
+    this.group.add(this.trail.points);
+    this.group.add(this.explosion.mesh);
 }
+
+// Fire the fireball
+FireballSpell.prototype.fire = function(origin, direction, weaponKey) {
+    this.isActive = true;
+    this.lifetime = 0;
+    this.weaponKey = weaponKey || '3x';
+    
+    var weapon = CONFIG.weapons[this.weaponKey];
+    var speed = weapon ? weapon.speed : FIREBALL_CONFIG.speed;
+    
+    this.position.copy(origin);
+    this.origin.copy(origin);
+    this.lastPosition.copy(origin);
+    this.direction.copy(direction).normalize();
+    this.velocity.copy(this.direction).multiplyScalar(speed);
+    
+    // Position and show core
+    this.core.position.copy(origin);
+    this.core.visible = true;
+    this.glow.position.copy(origin);
+    this.glow.visible = true;
+    
+    // Show trail
+    this.trail.reset();
+    this.trail.points.visible = true;
+    
+    // Reset shader time
+    this.coreMaterial.uniforms.uTime.value = 0;
+};
+
+// Update fireball position and effects
+FireballSpell.prototype.update = function(deltaTime) {
+    if (!this.isActive) {
+        // Still update explosion if active
+        this.explosion.update(deltaTime);
+        return false;
+    }
+    
+    // Update lifetime
+    this.lifetime += deltaTime;
+    if (this.lifetime >= FIREBALL_CONFIG.maxLifetime) {
+        this.deactivate();
+        return false;
+    }
+    
+    // Store last position for collision detection
+    this.lastPosition.copy(this.position);
+    
+    // Move fireball
+    this.position.x += this.velocity.x * deltaTime;
+    this.position.y += this.velocity.y * deltaTime;
+    this.position.z += this.velocity.z * deltaTime;
+    
+    // Update core position
+    this.core.position.copy(this.position);
+    this.glow.position.copy(this.position);
+    
+    // Update shader uniforms
+    this.coreMaterial.uniforms.uTime.value += deltaTime;
+    
+    // Update trail
+    this.trail.update(deltaTime, this.position, this.velocity, true);
+    
+    // Update explosion (in case it's still playing from previous impact)
+    this.explosion.update(deltaTime);
+    
+    return true;
+};
+
+// Trigger impact at current position
+FireballSpell.prototype.impact = function() {
+    if (!this.isActive) return;
+    
+    // Trigger explosion
+    this.explosion.trigger(this.position);
+    
+    // Deactivate fireball
+    this.deactivate();
+};
+
+// Deactivate fireball (return to pool)
+FireballSpell.prototype.deactivate = function() {
+    this.isActive = false;
+    this.core.visible = false;
+    this.glow.visible = false;
+    this.trail.points.visible = false;
+    this.trail.reset();
+};
+
+// Get collision data for fish hit detection
+FireballSpell.prototype.getCollisionData = function() {
+    return {
+        position: this.position,
+        lastPosition: this.lastPosition,
+        origin: this.origin,
+        velocity: this.velocity,
+        weaponKey: this.weaponKey,
+        isActive: this.isActive
+    };
+};
+
+FireballSpell.prototype.dispose = function() {
+    this.core.geometry.dispose();
+    this.coreMaterial.dispose();
+    this.glowMaterial.dispose();
+    this.trail.dispose();
+    this.explosion.dispose();
+};
 
 // -------------------- FIREBALL HELPER FUNCTIONS --------------------
 
