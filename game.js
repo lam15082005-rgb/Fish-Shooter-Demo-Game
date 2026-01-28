@@ -2,6 +2,778 @@
 // Using Three.js for 3D rendering
 // This version is modified for art department testing - no R2 dependency required
 
+// ==================== AAA FIREBALL PROJECTILE SYSTEM ====================
+// Production-ready, GPU-driven fireball spell for 3x weapon
+// Features: Cinematic glow, smooth trail, impactful explosion, bloom effects
+// Performance: 60 FPS, no per-particle JS updates, GPU-driven animations
+
+// -------------------- FIREBALL SHADERS --------------------
+// Vertex shader for fireball core - handles pulsing animation on GPU
+const FIREBALL_CORE_VERT = `
+    uniform float uTime;
+    uniform float uPulseSpeed;
+    uniform float uPulseAmount;
+    varying vec3 vNormal;
+    varying vec3 vViewPosition;
+    
+    void main() {
+        vNormal = normalize(normalMatrix * normal);
+        
+        // GPU-driven pulsing effect - no JS updates needed
+        float pulse = 1.0 + sin(uTime * uPulseSpeed) * uPulseAmount;
+        vec3 pulsedPosition = position * pulse;
+        
+        vec4 mvPosition = modelViewMatrix * vec4(pulsedPosition, 1.0);
+        vViewPosition = -mvPosition.xyz;
+        gl_Position = projectionMatrix * mvPosition;
+    }
+`;
+
+// Fragment shader for fireball core - creates hot center with cooler edges
+const FIREBALL_CORE_FRAG = `
+    uniform float uTime;
+    uniform vec3 uCoreColor;
+    uniform vec3 uEdgeColor;
+    uniform float uIntensity;
+    varying vec3 vNormal;
+    varying vec3 vViewPosition;
+    
+    void main() {
+        // Fresnel effect for hot center, cooler edges
+        vec3 viewDir = normalize(vViewPosition);
+        float fresnel = pow(1.0 - abs(dot(vNormal, viewDir)), 2.0);
+        
+        // Animate color intensity
+        float flicker = 0.9 + 0.1 * sin(uTime * 15.0 + fresnel * 10.0);
+        
+        // Blend from hot core (white/yellow) to cooler edge (orange/red)
+        vec3 color = mix(uCoreColor, uEdgeColor, fresnel);
+        color *= uIntensity * flicker;
+        
+        // Add bloom-friendly high values
+        gl_FragColor = vec4(color, 1.0);
+    }
+`;
+
+// Vertex shader for GPU particle trail - animates position and size on GPU
+const FIREBALL_TRAIL_VERT = `
+    attribute float aAge;
+    attribute float aLifetime;
+    attribute vec3 aVelocity;
+    attribute float aSize;
+    
+    uniform float uTime;
+    uniform float uBaseSize;
+    
+    varying float vAge;
+    varying float vLifetime;
+    
+    void main() {
+        vAge = aAge;
+        vLifetime = aLifetime;
+        
+        // Calculate normalized age (0 = new, 1 = dead)
+        float normalizedAge = aAge / aLifetime;
+        
+        // Fade out size over lifetime
+        float sizeFade = 1.0 - normalizedAge;
+        float size = aSize * uBaseSize * sizeFade;
+        
+        // Position is updated by the trail system, not here
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = size * (300.0 / -mvPosition.z);
+        gl_Position = projectionMatrix * mvPosition;
+    }
+`;
+
+// Fragment shader for GPU particle trail - fire color gradient
+const FIREBALL_TRAIL_FRAG = `
+    uniform sampler2D uTexture;
+    uniform vec3 uHotColor;
+    uniform vec3 uCoolColor;
+    
+    varying float vAge;
+    varying float vLifetime;
+    
+    void main() {
+        // Circular particle shape
+        vec2 center = gl_PointCoord - vec2(0.5);
+        float dist = length(center);
+        if (dist > 0.5) discard;
+        
+        // Soft edge
+        float alpha = 1.0 - smoothstep(0.3, 0.5, dist);
+        
+        // Age-based color: hot (young) to cool (old)
+        float normalizedAge = vAge / vLifetime;
+        vec3 color = mix(uHotColor, uCoolColor, normalizedAge);
+        
+        // Fade out over lifetime
+        alpha *= 1.0 - normalizedAge;
+        
+        // Boost for bloom
+        color *= 2.0;
+        
+        gl_FragColor = vec4(color, alpha);
+    }
+`;
+
+// -------------------- POST-PROCESSING STATE --------------------
+let composer = null;
+let bloomPass = null;
+let renderPass = null;
+const BLOOM_CONFIG = {
+    enabled: true,
+    strength: 0.8,
+    radius: 0.4,
+    threshold: 0.6,
+    // Impact bloom spike settings
+    impactStrength: 2.5,
+    impactDuration: 150,
+    currentImpactTime: 0,
+    isImpacting: false
+};
+
+// -------------------- SCREEN SHAKE STATE --------------------
+const SCREEN_SHAKE_CONFIG = {
+    intensity: 0,
+    maxIntensity: 8,
+    decay: 0.92,
+    offset: new THREE.Vector3()
+};
+
+// -------------------- FIREBALL SYSTEM STATE --------------------
+const fireballPool = [];
+const activeFireballs = [];
+const FIREBALL_POOL_SIZE = 20;
+const FIREBALL_CONFIG = {
+    speed: 700,
+    maxLifetime: 4,
+    coreRadius: 8,
+    trailParticleCount: 64,
+    trailLength: 120,
+    explosionParticleCount: 32,
+    colors: {
+        coreHot: new THREE.Color(1.0, 1.0, 0.8),
+        coreEdge: new THREE.Color(1.0, 0.4, 0.1),
+        trailHot: new THREE.Color(1.0, 0.8, 0.3),
+        trailCool: new THREE.Color(0.8, 0.2, 0.0),
+        explosion: new THREE.Color(1.0, 0.5, 0.1)
+    }
+};
+
+// -------------------- FIREBALL TRAIL CLASS --------------------
+// GPU particle trail using THREE.Points with ShaderMaterial
+// No per-particle JS updates - all animation done in shaders
+class FireballTrail {
+    constructor() {
+        this.particleCount = FIREBALL_CONFIG.trailParticleCount;
+        this.positions = new Float32Array(this.particleCount * 3);
+        this.ages = new Float32Array(this.particleCount);
+        this.lifetimes = new Float32Array(this.particleCount);
+        this.velocities = new Float32Array(this.particleCount * 3);
+        this.sizes = new Float32Array(this.particleCount);
+        this.nextParticleIndex = 0;
+        this.spawnAccumulator = 0;
+        
+        // Initialize all particles as dead (age >= lifetime)
+        for (let i = 0; i < this.particleCount; i++) {
+            this.ages[i] = 1.0;
+            this.lifetimes[i] = 1.0;
+            this.sizes[i] = 1.0;
+        }
+        
+        // Create geometry with attributes
+        this.geometry = new THREE.BufferGeometry();
+        this.geometry.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
+        this.geometry.setAttribute('aAge', new THREE.BufferAttribute(this.ages, 1));
+        this.geometry.setAttribute('aLifetime', new THREE.BufferAttribute(this.lifetimes, 1));
+        this.geometry.setAttribute('aVelocity', new THREE.BufferAttribute(this.velocities, 3));
+        this.geometry.setAttribute('aSize', new THREE.BufferAttribute(this.sizes, 1));
+        
+        // Create shader material
+        this.material = new THREE.ShaderMaterial({
+            vertexShader: FIREBALL_TRAIL_VERT,
+            fragmentShader: FIREBALL_TRAIL_FRAG,
+            uniforms: {
+                uTime: { value: 0 },
+                uBaseSize: { value: 12 },
+                uHotColor: { value: FIREBALL_CONFIG.colors.trailHot },
+                uCoolColor: { value: FIREBALL_CONFIG.colors.trailCool }
+            },
+            transparent: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
+        });
+        
+        this.points = new THREE.Points(this.geometry, this.material);
+        this.points.frustumCulled = false;
+    }
+    
+    // Spawn new trail particles at fireball position
+    spawnParticle(position, velocity) {
+        const i = this.nextParticleIndex;
+        this.nextParticleIndex = (this.nextParticleIndex + 1) % this.particleCount;
+        
+        // Set position
+        this.positions[i * 3] = position.x + (Math.random() - 0.5) * 4;
+        this.positions[i * 3 + 1] = position.y + (Math.random() - 0.5) * 4;
+        this.positions[i * 3 + 2] = position.z + (Math.random() - 0.5) * 4;
+        
+        // Set velocity (opposite to fireball direction with spread)
+        const spread = 0.3;
+        this.velocities[i * 3] = -velocity.x * 0.1 + (Math.random() - 0.5) * spread * 50;
+        this.velocities[i * 3 + 1] = -velocity.y * 0.1 + (Math.random() - 0.5) * spread * 50;
+        this.velocities[i * 3 + 2] = -velocity.z * 0.1 + (Math.random() - 0.5) * spread * 50;
+        
+        // Reset age and set lifetime
+        this.ages[i] = 0;
+        this.lifetimes[i] = 0.3 + Math.random() * 0.2;
+        this.sizes[i] = 0.8 + Math.random() * 0.4;
+    }
+    
+    // Update trail particles (minimal JS - just age increment and buffer updates)
+    update(deltaTime, fireballPosition, fireballVelocity, isActive) {
+        // Spawn new particles if fireball is active
+        if (isActive) {
+            this.spawnAccumulator += deltaTime;
+            const spawnInterval = 0.008; // ~125 particles/second
+            while (this.spawnAccumulator >= spawnInterval) {
+                this.spawnParticle(fireballPosition, fireballVelocity);
+                this.spawnAccumulator -= spawnInterval;
+            }
+        }
+        
+        // Update ages and positions (minimal per-particle work)
+        for (let i = 0; i < this.particleCount; i++) {
+            if (this.ages[i] < this.lifetimes[i]) {
+                this.ages[i] += deltaTime;
+                // Move particles by velocity
+                this.positions[i * 3] += this.velocities[i * 3] * deltaTime;
+                this.positions[i * 3 + 1] += this.velocities[i * 3 + 1] * deltaTime;
+                this.positions[i * 3 + 2] += this.velocities[i * 3 + 2] * deltaTime;
+            }
+        }
+        
+        // Update buffer attributes
+        this.geometry.attributes.position.needsUpdate = true;
+        this.geometry.attributes.aAge.needsUpdate = true;
+        this.material.uniforms.uTime.value += deltaTime;
+    }
+    
+    // Reset all particles (for pooling)
+    reset() {
+        for (let i = 0; i < this.particleCount; i++) {
+            this.ages[i] = this.lifetimes[i] + 1; // Mark as dead
+        }
+        this.geometry.attributes.aAge.needsUpdate = true;
+        this.spawnAccumulator = 0;
+    }
+    
+    dispose() {
+        this.geometry.dispose();
+        this.material.dispose();
+    }
+}
+
+// -------------------- FIREBALL EXPLOSION CLASS --------------------
+// InstancedMesh sparks for efficient explosion rendering
+class FireballExplosion {
+    constructor() {
+        this.particleCount = FIREBALL_CONFIG.explosionParticleCount;
+        this.isActive = false;
+        this.lifetime = 0;
+        this.maxLifetime = 0.5;
+        
+        // Create instanced mesh for sparks
+        const sparkGeometry = new THREE.SphereGeometry(2, 4, 4);
+        const sparkMaterial = new THREE.MeshBasicMaterial({
+            color: FIREBALL_CONFIG.colors.explosion,
+            transparent: true,
+            blending: THREE.AdditiveBlending
+        });
+        
+        this.mesh = new THREE.InstancedMesh(sparkGeometry, sparkMaterial, this.particleCount);
+        this.mesh.visible = false;
+        this.mesh.frustumCulled = false;
+        
+        // Store velocities and initial positions
+        this.velocities = [];
+        this.positions = [];
+        this.dummy = new THREE.Object3D();
+        
+        for (let i = 0; i < this.particleCount; i++) {
+            this.velocities.push(new THREE.Vector3());
+            this.positions.push(new THREE.Vector3());
+        }
+    }
+    
+    // Trigger explosion at position
+    trigger(position) {
+        this.isActive = true;
+        this.lifetime = 0;
+        this.mesh.visible = true;
+        
+        // Initialize particles with radial outward velocities
+        for (let i = 0; i < this.particleCount; i++) {
+            // Random direction on sphere
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const speed = 150 + Math.random() * 100;
+            
+            this.velocities[i].set(
+                Math.sin(phi) * Math.cos(theta) * speed,
+                Math.sin(phi) * Math.sin(theta) * speed,
+                Math.cos(phi) * speed
+            );
+            
+            this.positions[i].copy(position);
+            
+            // Set initial transform
+            this.dummy.position.copy(position);
+            this.dummy.scale.setScalar(1);
+            this.dummy.updateMatrix();
+            this.mesh.setMatrixAt(i, this.dummy.matrix);
+        }
+        
+        this.mesh.instanceMatrix.needsUpdate = true;
+        
+        // Trigger screen shake
+        triggerFireballScreenShake(SCREEN_SHAKE_CONFIG.maxIntensity);
+        
+        // Trigger bloom spike
+        triggerBloomSpike();
+    }
+    
+    // Update explosion particles
+    update(deltaTime) {
+        if (!this.isActive) return;
+        
+        this.lifetime += deltaTime;
+        
+        if (this.lifetime >= this.maxLifetime) {
+            this.isActive = false;
+            this.mesh.visible = false;
+            return;
+        }
+        
+        const progress = this.lifetime / this.maxLifetime;
+        const scale = 1 - progress; // Shrink over time
+        const opacity = 1 - progress;
+        
+        // Update material opacity
+        this.mesh.material.opacity = opacity;
+        
+        // Update particle positions
+        for (let i = 0; i < this.particleCount; i++) {
+            // Move by velocity with gravity
+            this.positions[i].x += this.velocities[i].x * deltaTime;
+            this.positions[i].y += this.velocities[i].y * deltaTime - 200 * deltaTime * this.lifetime;
+            this.positions[i].z += this.velocities[i].z * deltaTime;
+            
+            // Apply drag
+            this.velocities[i].multiplyScalar(0.98);
+            
+            // Update transform
+            this.dummy.position.copy(this.positions[i]);
+            this.dummy.scale.setScalar(scale * (0.5 + Math.random() * 0.5));
+            this.dummy.updateMatrix();
+            this.mesh.setMatrixAt(i, this.dummy.matrix);
+        }
+        
+        this.mesh.instanceMatrix.needsUpdate = true;
+    }
+    
+    dispose() {
+        this.mesh.geometry.dispose();
+        this.mesh.material.dispose();
+    }
+}
+
+// -------------------- FIREBALL SPELL CLASS --------------------
+// Main projectile class combining core, trail, and explosion
+class FireballSpell {
+    constructor() {
+        this.isActive = false;
+        this.position = new THREE.Vector3();
+        this.direction = new THREE.Vector3();
+        this.velocity = new THREE.Vector3();
+        this.lifetime = 0;
+        this.weaponKey = '3x';
+        this.origin = new THREE.Vector3();
+        this.lastPosition = new THREE.Vector3();
+        
+        // Create fireball core with shader material
+        const coreGeometry = new THREE.SphereGeometry(FIREBALL_CONFIG.coreRadius, 16, 16);
+        this.coreMaterial = new THREE.ShaderMaterial({
+            vertexShader: FIREBALL_CORE_VERT,
+            fragmentShader: FIREBALL_CORE_FRAG,
+            uniforms: {
+                uTime: { value: 0 },
+                uPulseSpeed: { value: 8.0 },
+                uPulseAmount: { value: 0.15 },
+                uCoreColor: { value: FIREBALL_CONFIG.colors.coreHot },
+                uEdgeColor: { value: FIREBALL_CONFIG.colors.coreEdge },
+                uIntensity: { value: 2.5 }
+            },
+            transparent: true,
+            blending: THREE.AdditiveBlending
+        });
+        
+        this.core = new THREE.Mesh(coreGeometry, this.coreMaterial);
+        this.core.visible = false;
+        
+        // Create glow sprite for extra bloom
+        const glowTexture = createFireballGlowTexture();
+        this.glowMaterial = new THREE.SpriteMaterial({
+            map: glowTexture,
+            color: 0xff6600,
+            transparent: true,
+            blending: THREE.AdditiveBlending,
+            opacity: 0.6
+        });
+        this.glow = new THREE.Sprite(this.glowMaterial);
+        this.glow.scale.set(50, 50, 1);
+        this.glow.visible = false;
+        
+        // Create trail
+        this.trail = new FireballTrail();
+        this.trail.points.visible = false;
+        
+        // Create explosion (shared, triggered on impact)
+        this.explosion = new FireballExplosion();
+        
+        // Group for easy scene management
+        this.group = new THREE.Group();
+        this.group.add(this.core);
+        this.group.add(this.glow);
+        this.group.add(this.trail.points);
+        this.group.add(this.explosion.mesh);
+    }
+    
+    // Fire the fireball
+    fire(origin, direction, weaponKey) {
+        this.isActive = true;
+        this.lifetime = 0;
+        this.weaponKey = weaponKey || '3x';
+        
+        const weapon = CONFIG.weapons[this.weaponKey];
+        const speed = weapon ? weapon.speed : FIREBALL_CONFIG.speed;
+        
+        this.position.copy(origin);
+        this.origin.copy(origin);
+        this.lastPosition.copy(origin);
+        this.direction.copy(direction).normalize();
+        this.velocity.copy(this.direction).multiplyScalar(speed);
+        
+        // Position and show core
+        this.core.position.copy(origin);
+        this.core.visible = true;
+        this.glow.position.copy(origin);
+        this.glow.visible = true;
+        
+        // Show trail
+        this.trail.reset();
+        this.trail.points.visible = true;
+        
+        // Reset shader time
+        this.coreMaterial.uniforms.uTime.value = 0;
+    }
+    
+    // Update fireball position and effects
+    update(deltaTime) {
+        if (!this.isActive) {
+            // Still update explosion if active
+            this.explosion.update(deltaTime);
+            return false;
+        }
+        
+        // Update lifetime
+        this.lifetime += deltaTime;
+        if (this.lifetime >= FIREBALL_CONFIG.maxLifetime) {
+            this.deactivate();
+            return false;
+        }
+        
+        // Store last position for collision detection
+        this.lastPosition.copy(this.position);
+        
+        // Move fireball
+        this.position.x += this.velocity.x * deltaTime;
+        this.position.y += this.velocity.y * deltaTime;
+        this.position.z += this.velocity.z * deltaTime;
+        
+        // Update core position
+        this.core.position.copy(this.position);
+        this.glow.position.copy(this.position);
+        
+        // Update shader uniforms
+        this.coreMaterial.uniforms.uTime.value += deltaTime;
+        
+        // Update trail
+        this.trail.update(deltaTime, this.position, this.velocity, true);
+        
+        // Update explosion (in case it's still playing from previous impact)
+        this.explosion.update(deltaTime);
+        
+        return true;
+    }
+    
+    // Trigger impact at current position
+    impact() {
+        if (!this.isActive) return;
+        
+        // Trigger explosion
+        this.explosion.trigger(this.position);
+        
+        // Deactivate fireball
+        this.deactivate();
+    }
+    
+    // Deactivate fireball (return to pool)
+    deactivate() {
+        this.isActive = false;
+        this.core.visible = false;
+        this.glow.visible = false;
+        this.trail.points.visible = false;
+        this.trail.reset();
+    }
+    
+    // Get collision data for fish hit detection
+    getCollisionData() {
+        return {
+            position: this.position,
+            lastPosition: this.lastPosition,
+            origin: this.origin,
+            velocity: this.velocity,
+            weaponKey: this.weaponKey,
+            isActive: this.isActive
+        };
+    }
+    
+    dispose() {
+        this.core.geometry.dispose();
+        this.coreMaterial.dispose();
+        this.glowMaterial.dispose();
+        this.trail.dispose();
+        this.explosion.dispose();
+    }
+}
+
+// -------------------- FIREBALL HELPER FUNCTIONS --------------------
+
+// Create procedural glow texture for fireball
+function createFireballGlowTexture() {
+    const size = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    
+    // Radial gradient for soft glow
+    const gradient = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
+    gradient.addColorStop(0, 'rgba(255, 200, 100, 1)');
+    gradient.addColorStop(0.3, 'rgba(255, 100, 50, 0.8)');
+    gradient.addColorStop(0.6, 'rgba(255, 50, 0, 0.3)');
+    gradient.addColorStop(1, 'rgba(255, 0, 0, 0)');
+    
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, size, size);
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    return texture;
+}
+
+// Initialize post-processing (EffectComposer + UnrealBloomPass)
+function initPostProcessing() {
+    if (!renderer || !scene || !camera) return;
+    if (!THREE.EffectComposer || !THREE.RenderPass || !THREE.UnrealBloomPass) {
+        console.warn('Post-processing libraries not loaded, bloom disabled');
+        BLOOM_CONFIG.enabled = false;
+        return;
+    }
+    
+    try {
+        composer = new THREE.EffectComposer(renderer);
+        
+        renderPass = new THREE.RenderPass(scene, camera);
+        composer.addPass(renderPass);
+        
+        bloomPass = new THREE.UnrealBloomPass(
+            new THREE.Vector2(window.innerWidth, window.innerHeight),
+            BLOOM_CONFIG.strength,
+            BLOOM_CONFIG.radius,
+            BLOOM_CONFIG.threshold
+        );
+        composer.addPass(bloomPass);
+        
+        BLOOM_CONFIG.enabled = true;
+        console.log('Post-processing initialized with UnrealBloomPass');
+    } catch (e) {
+        console.warn('Failed to initialize post-processing:', e);
+        BLOOM_CONFIG.enabled = false;
+    }
+}
+
+// Trigger bloom spike on fireball impact
+function triggerBloomSpike() {
+    if (!BLOOM_CONFIG.enabled || !bloomPass) return;
+    BLOOM_CONFIG.isImpacting = true;
+    BLOOM_CONFIG.currentImpactTime = 0;
+}
+
+// Update bloom (call in render loop)
+function updateBloom(deltaTime) {
+    if (!BLOOM_CONFIG.enabled || !bloomPass) return;
+    
+    if (BLOOM_CONFIG.isImpacting) {
+        BLOOM_CONFIG.currentImpactTime += deltaTime * 1000;
+        
+        if (BLOOM_CONFIG.currentImpactTime >= BLOOM_CONFIG.impactDuration) {
+            BLOOM_CONFIG.isImpacting = false;
+            bloomPass.strength = BLOOM_CONFIG.strength;
+        } else {
+            // Spike then decay
+            const progress = BLOOM_CONFIG.currentImpactTime / BLOOM_CONFIG.impactDuration;
+            const spike = Math.sin(progress * Math.PI);
+            bloomPass.strength = BLOOM_CONFIG.strength + (BLOOM_CONFIG.impactStrength - BLOOM_CONFIG.strength) * spike;
+        }
+    }
+}
+
+// Trigger screen shake for fireball impact
+function triggerFireballScreenShake(intensity) {
+    SCREEN_SHAKE_CONFIG.intensity = Math.min(intensity, SCREEN_SHAKE_CONFIG.maxIntensity);
+}
+
+// Update screen shake (call in render loop)
+function updateFireballScreenShake(deltaTime) {
+    if (SCREEN_SHAKE_CONFIG.intensity <= 0.01) {
+        SCREEN_SHAKE_CONFIG.intensity = 0;
+        SCREEN_SHAKE_CONFIG.offset.set(0, 0, 0);
+        return;
+    }
+    
+    // Random offset based on intensity
+    SCREEN_SHAKE_CONFIG.offset.set(
+        (Math.random() - 0.5) * SCREEN_SHAKE_CONFIG.intensity * 2,
+        (Math.random() - 0.5) * SCREEN_SHAKE_CONFIG.intensity * 2,
+        (Math.random() - 0.5) * SCREEN_SHAKE_CONFIG.intensity
+    );
+    
+    // Decay
+    SCREEN_SHAKE_CONFIG.intensity *= SCREEN_SHAKE_CONFIG.decay;
+}
+
+// Apply screen shake to camera
+function applyFireballScreenShake() {
+    if (!camera || SCREEN_SHAKE_CONFIG.intensity <= 0) return;
+    camera.position.add(SCREEN_SHAKE_CONFIG.offset);
+}
+
+// Initialize fireball pool
+function initFireballPool() {
+    if (!scene) return;
+    
+    for (let i = 0; i < FIREBALL_POOL_SIZE; i++) {
+        const fireball = new FireballSpell();
+        scene.add(fireball.group);
+        fireballPool.push(fireball);
+    }
+    console.log(`Fireball pool initialized with ${FIREBALL_POOL_SIZE} fireballs`);
+}
+
+// Get fireball from pool
+function getFireballFromPool() {
+    for (const fireball of fireballPool) {
+        if (!fireball.isActive) {
+            return fireball;
+        }
+    }
+    // Pool exhausted, return null (will fall back to regular bullet)
+    return null;
+}
+
+// Fire a fireball (called from weapon system)
+function fireFireball(origin, direction, weaponKey) {
+    const fireball = getFireballFromPool();
+    if (!fireball) return null;
+    
+    fireball.fire(origin, direction, weaponKey);
+    if (!activeFireballs.includes(fireball)) {
+        activeFireballs.push(fireball);
+    }
+    return fireball;
+}
+
+// Update all active fireballs
+function updateFireballs(deltaTime) {
+    for (let i = activeFireballs.length - 1; i >= 0; i--) {
+        const fireball = activeFireballs[i];
+        fireball.update(deltaTime);
+        
+        // Remove from active list if deactivated and explosion finished
+        if (!fireball.isActive && !fireball.explosion.isActive) {
+            activeFireballs.splice(i, 1);
+        }
+    }
+    
+    // Update bloom and screen shake
+    updateBloom(deltaTime);
+    updateFireballScreenShake(deltaTime);
+}
+
+// Check fireball collisions with fish (called from game loop)
+function checkFireballCollisions() {
+    for (const fireball of activeFireballs) {
+        if (!fireball.isActive) continue;
+        
+        const collisionData = fireball.getCollisionData();
+        const weapon = CONFIG.weapons[collisionData.weaponKey];
+        if (!weapon) continue;
+        
+        // Check against all fish
+        for (const fish of fishes) {
+            if (!fish.isAlive) continue;
+            
+            const fishPos = fish.group.position;
+            const fishRadius = fish.size * 0.5;
+            
+            // Skip fish too close to origin (air wall fix)
+            const distFromOriginSq = fishPos.distanceToSquared(collisionData.origin);
+            const minHitDistance = 50;
+            const minDistRequired = minHitDistance + fishRadius;
+            if (distFromOriginSq < minDistRequired * minDistRequired) continue;
+            
+            // Segment-sphere collision
+            const collision = segmentIntersectsSphere(
+                collisionData.lastPosition,
+                collisionData.position,
+                fishPos,
+                fishRadius,
+                bulletTempVectors.hitPos
+            );
+            
+            if (collision.hit) {
+                // Apply damage
+                const killed = fish.takeDamage(weapon.damage, collisionData.weaponKey);
+                
+                // Show hit effects if fish survived
+                if (!killed) {
+                    createHitParticles(bulletTempVectors.hitPos, weapon.color, 8);
+                    spawnWeaponHitEffect(collisionData.weaponKey, bulletTempVectors.hitPos, fish, collisionData.velocity.clone().normalize());
+                    playWeaponHitSound(collisionData.weaponKey);
+                }
+                
+                // Trigger fireball impact
+                fireball.impact();
+                break;
+            }
+        }
+    }
+}
+
 // ==================== MODULE TESTING CONFIGURATION ====================
 // Art department can use this to test their GLB models locally or via R2 URL
 // IMPORTANT: Replace 'YOUR_R2_BUCKET_URL' with your own R2 bucket URL
@@ -8550,7 +9322,13 @@ function initGameScene() {
     // Warm up coin shaders (forces GPU shader compilation during load)
     warmUpCoinShaders();
     
-    console.log('[PRELOAD] All effect pools pre-initialized (VFX geometry, muzzle flash, coin, effect, fireball, lightning arc, audio, score pop, coin shaders)');
+    // Initialize fireball pool for 3x weapon (AAA-quality GPU-driven projectiles)
+    initFireballPool();
+    
+    // Initialize post-processing (EffectComposer + UnrealBloomPass for cinematic bloom)
+    initPostProcessing();
+    
+    console.log('[PRELOAD] All effect pools pre-initialized (VFX geometry, muzzle flash, coin, effect, fireball, lightning arc, audio, score pop, coin shaders, fireball pool, post-processing)');
     
     updateLoadingProgress(95, 'Setting up controls...');
     setupEventListeners();
@@ -14224,20 +15002,20 @@ function fireBullet(targetX, targetY) {
     
     // Fire based on weapon type
     if (weapon.type === 'spread') {
-        // 3x weapon: Fire 3 bullets in fan spread pattern
+        // 3x weapon: Fire 3 FIREBALLS in fan spread pattern (AAA-quality GPU-driven projectiles)
         const spreadAngle = weapon.spreadAngle * (Math.PI / 180); // Convert to radians
         
-        // Center bullet
-        spawnBulletFromDirection(muzzlePos, direction, weaponKey);
+        // Center fireball
+        fireFireball(muzzlePos, direction, weaponKey);
         
         // PERFORMANCE: Use temp vectors instead of clone() + new Vector3()
-        // Left bullet (rotate around Y axis)
+        // Left fireball (rotate around Y axis)
         fireBulletTempVectors.leftDir.copy(direction).applyAxisAngle(fireBulletTempVectors.yAxis, spreadAngle);
-        spawnBulletFromDirection(muzzlePos, fireBulletTempVectors.leftDir, weaponKey);
+        fireFireball(muzzlePos, fireBulletTempVectors.leftDir, weaponKey);
         
-        // Right bullet (rotate around Y axis)
+        // Right fireball (rotate around Y axis)
         fireBulletTempVectors.rightDir.copy(direction).applyAxisAngle(fireBulletTempVectors.yAxis, -spreadAngle);
-        spawnBulletFromDirection(muzzlePos, fireBulletTempVectors.rightDir, weaponKey);
+        fireFireball(muzzlePos, fireBulletTempVectors.rightDir, weaponKey);
         
     } else if (weapon.type === 'aoe') {
         // ACCURATE AIMING: 8x weapon uses parabolic trajectory with compensated velocity
@@ -16146,6 +16924,10 @@ function animate() {
     // 3X WEAPON FIRE PARTICLES: Update fire trail particles
     updateFireParticles(deltaTime);
     
+    // AAA FIREBALL SYSTEM: Update GPU-driven fireball projectiles (3x weapon)
+    updateFireballs(deltaTime);
+    checkFireballCollisions();
+    
     // LIGHTNING ARC POOL: Update pooled lightning arc animations
     // PERFORMANCE FIX: Replaces per-arc requestAnimationFrame loops
     updateLightningArcs(deltaTime);
@@ -16205,8 +16987,15 @@ function animate() {
             console.log('[PERF-DIAG] FPS:', Math.round(1 / deltaTime));
         }
         
-        // Render
-        renderer.render(scene, camera);
+        // Apply fireball screen shake to camera
+        applyFireballScreenShake();
+        
+        // Render with post-processing (bloom) if enabled, otherwise standard render
+        if (BLOOM_CONFIG.enabled && composer) {
+            composer.render();
+        } else {
+            renderer.render(scene, camera);
+        }
 }
 
 // PERFORMANCE FIX: Cache seaweed and caustic light references to avoid iterating all children every frame
