@@ -4626,48 +4626,47 @@ function updateFireParticles(deltaTime) {
 
 
 // ==================== 5X WEAPON FIREBALL VFX SYSTEM ====================
-// Unity/Unreal-quality projectile VFX with flipbook animations, trails, sparks,
-// impact effects, bloom, tone mapping, camera shake, and localized distortion
+// AAA-quality fireball projectile with procedural core sphere, inner/outer flame flipbooks,
+// frame-blended sampling, trails, sparks, impact effects, bloom, tone mapping, camera shake
 // This replaces the standard bullet for the 5x weapon
 
 const FIREBALL_VFX_CONFIG = {
     enabled: true,
-    assetPath: 'assets/vfx/',
+    assetPath: 'assets/',
     textures: {
-        coreProjectile: 'CoreProjectile.png',  // 32-frame flipbook (6x6 grid)
-        explosion: 'explosion.png',             // 32-frame impact flipbook (6x6 grid)
-        noise: 'noise.png',                     // Trail noise texture
-        spark: 'spark.png'                      // Spark flipbook (5x4 grid)
+        innerFlame: 'inner_flame_flipbook.png',
+        outerFlame: 'outer_flame_flipbook.png',
+        impactExplosion: 'impact_explosion_64f.png',
+        noise: 'vfx/noise.png',
+        spark: 'vfx/spark.png'
     },
     flipbook: {
-        coreFrames: 32,
-        coreCols: 6,
-        coreRows: 6,
-        impactFrames: 32,
-        impactCols: 6,
-        impactRows: 6,
+        innerFlameFrames: 32,
+        innerFlameCols: 8,
+        innerFlameRows: 5,
+        outerFlameFrames: 64,
+        outerFlameCols: 8,
+        outerFlameRows: 8,
+        impactFrames: 64,
+        impactCols: 8,
+        impactRows: 8,
         sparkFrames: 20,
         sparkCols: 5,
         sparkRows: 4,
         fps: 30
     },
     projectile: {
-        size: 60,
-        billboardRotationSpeed: 0.5,
-        planeCount: 8,
-        planeRotations: [
-            { x: 0, y: 0, z: 0 },
-            { x: 45, y: 0, z: 0 },
-            { x: -45, y: 0, z: 0 },
-            { x: 0, y: 45, z: 0 },
-            { x: 0, y: -45, z: 0 },
-            { x: 0, y: 0, z: 45 },
-            { x: 0, y: 0, z: -45 },
-            { x: 30, y: 30, z: 30 }
-        ],
-        planeScales: [1.0, 0.95, 0.9, 0.92, 0.88, 0.85, 0.93, 0.87],
-        planePhaseOffsets: [0, 0.12, 0.25, 0.37, 0.5, 0.62, 0.75, 0.87],
-        planeAlphaMultipliers: [1.0, 0.85, 0.75, 0.8, 0.7, 0.65, 0.78, 0.6]
+        coreSize: 30,
+        innerFlameSize: 50,
+        outerFlameSize: 70,
+        innerFlameSpeed: 1.5,
+        outerFlameSpeed: 0.8,
+        coreColor: { r: 1.0, g: 0.9, b: 0.5 },
+        coreEmission: 3.0,
+        fresnelPower: 2.5,
+        fresnelIntensity: 0.8,
+        noiseStrength: 0.15,
+        noiseSpeed: 2.0
     },
     trail: {
         maxPoints: 30,
@@ -4686,24 +4685,10 @@ const FIREBALL_VFX_CONFIG = {
         gravity: 200
     },
     impact: {
-        size: 120,
-        duration: 0.8,
-        scaleUp: 1.6,
-        sparkBurstCount: 25,
-        planeCount: 8,
-        planeRotations: [
-            { x: 0, y: 0, z: 0 },
-            { x: 50, y: 0, z: 0 },
-            { x: -50, y: 0, z: 0 },
-            { x: 0, y: 50, z: 0 },
-            { x: 0, y: -50, z: 0 },
-            { x: 0, y: 0, z: 50 },
-            { x: 0, y: 0, z: -50 },
-            { x: 35, y: 35, z: 35 }
-        ],
-        planeScales: [1.0, 0.92, 0.88, 0.95, 0.85, 0.9, 0.87, 0.82],
-        planePhaseOffsets: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7],
-        planeAlphaMultipliers: [1.0, 0.8, 0.7, 0.85, 0.65, 0.75, 0.72, 0.55]
+        size: 150,
+        duration: 1.2,
+        scaleUp: 2.0,
+        sparkBurstCount: 25
     },
     postProcessing: {
         bloomThreshold: 0.4,
@@ -4726,22 +4711,22 @@ const FIREBALL_VFX_CONFIG = {
     },
     curves: {
         scale: [
-            { t: 0.0, v: 0.2 },
-            { t: 0.15, v: 1.0 },
+            { t: 0.0, v: 0.3 },
+            { t: 0.1, v: 1.0 },
             { t: 0.5, v: 1.2 },
-            { t: 1.0, v: 1.6 }
+            { t: 1.0, v: 1.8 }
         ],
         alpha: [
-            { t: 0.0, v: 0.8 },
+            { t: 0.0, v: 0.9 },
             { t: 0.1, v: 1.0 },
-            { t: 0.7, v: 1.0 },
+            { t: 0.6, v: 1.0 },
             { t: 1.0, v: 0.0 }
         ],
         emission: [
-            { t: 0.0, v: 2.5 },
-            { t: 0.3, v: 2.0 },
-            { t: 0.7, v: 1.5 },
-            { t: 1.0, v: 0.8 }
+            { t: 0.0, v: 3.0 },
+            { t: 0.2, v: 2.5 },
+            { t: 0.6, v: 1.8 },
+            { t: 1.0, v: 0.5 }
         ]
     }
 };
@@ -4768,8 +4753,9 @@ function evaluateVFXCurve(curve, progress) {
 const fireballVFXState = {
     initialized: false,
     textures: {
-        coreProjectile: null,
-        explosion: null,
+        innerFlame: null,
+        outerFlame: null,
+        impactExplosion: null,
         noise: null,
         spark: null
     },
@@ -4790,14 +4776,37 @@ const fireballVFXState = {
     distortionUniforms: null
 };
 
-// Load fireball VFX textures
+// Load fireball VFX textures with proper settings (no mipmaps, linear filtering, clamp to edge)
 async function loadFireballVFXTextures() {
     if (fireballVFXState.texturesLoaded) return;
 
     const textureLoader = new THREE.TextureLoader();
     const config = FIREBALL_VFX_CONFIG;
 
-    const loadTexture = (key) => {
+    const loadFlipbookTexture = (key) => {
+        return new Promise((resolve) => {
+            const url = config.assetPath + config.textures[key];
+            textureLoader.load(url,
+                (texture) => {
+                    texture.generateMipmaps = false;
+                    texture.minFilter = THREE.LinearFilter;
+                    texture.magFilter = THREE.LinearFilter;
+                    texture.wrapS = THREE.ClampToEdgeWrapping;
+                    texture.wrapT = THREE.ClampToEdgeWrapping;
+                    fireballVFXState.textures[key] = texture;
+                    console.log(`[FIREBALL-VFX] Loaded flipbook texture: ${key}`);
+                    resolve(texture);
+                },
+                undefined,
+                (error) => {
+                    console.warn(`[FIREBALL-VFX] Failed to load texture ${key}:`, error);
+                    resolve(null);
+                }
+            );
+        });
+    };
+
+    const loadNoiseTexture = (key) => {
         return new Promise((resolve) => {
             const url = config.assetPath + config.textures[key];
             textureLoader.load(url,
@@ -4807,7 +4816,7 @@ async function loadFireballVFXTextures() {
                     texture.minFilter = THREE.LinearFilter;
                     texture.magFilter = THREE.LinearFilter;
                     fireballVFXState.textures[key] = texture;
-                    console.log(`[FIREBALL-VFX] Loaded texture: ${key}`);
+                    console.log(`[FIREBALL-VFX] Loaded noise texture: ${key}`);
                     resolve(texture);
                 },
                 undefined,
@@ -4820,10 +4829,11 @@ async function loadFireballVFXTextures() {
     };
 
     await Promise.all([
-        loadTexture('coreProjectile'),
-        loadTexture('explosion'),
-        loadTexture('noise'),
-        loadTexture('spark')
+        loadFlipbookTexture('innerFlame'),
+        loadFlipbookTexture('outerFlame'),
+        loadFlipbookTexture('impactExplosion'),
+        loadNoiseTexture('noise'),
+        loadFlipbookTexture('spark')
     ]);
 
     fireballVFXState.texturesLoaded = true;
@@ -4972,9 +4982,155 @@ function createDistortionShaderPass() {
     }
 }
 
-// Enhanced flipbook material with stronger Fresnel, depth-based alpha fading, and phase offset support
-function createFlipbookMaterial(texture, cols, rows, totalFrames, phaseOffset = 0, alphaMultiplier = 1.0) {
-    const material = new THREE.ShaderMaterial({
+// Procedural core sphere shader material (radial gradient, Fresnel glow, noise distortion)
+function createProceduralCoreMaterial() {
+    const config = FIREBALL_VFX_CONFIG.projectile;
+    return new THREE.ShaderMaterial({
+        uniforms: {
+            uTime: { value: 0 },
+            uOpacity: { value: 1.0 },
+            uScale: { value: 1.0 },
+            uCoreColor: { value: new THREE.Color(config.coreColor.r, config.coreColor.g, config.coreColor.b) },
+            uEmission: { value: config.coreEmission },
+            uFresnelPower: { value: config.fresnelPower },
+            uFresnelIntensity: { value: config.fresnelIntensity },
+            uNoiseStrength: { value: config.noiseStrength },
+            uNoiseSpeed: { value: config.noiseSpeed }
+        },
+        vertexShader: `
+            uniform float uScale;
+            varying vec3 vNormal;
+            varying vec3 vViewDir;
+            varying vec3 vPosition;
+            void main() {
+                vNormal = normalize(normalMatrix * normal);
+                vec4 worldPos = modelMatrix * vec4(position, 1.0);
+                vViewDir = normalize(cameraPosition - worldPos.xyz);
+                vPosition = position;
+                vec3 pos = position * uScale;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform float uTime;
+            uniform float uOpacity;
+            uniform vec3 uCoreColor;
+            uniform float uEmission;
+            uniform float uFresnelPower;
+            uniform float uFresnelIntensity;
+            uniform float uNoiseStrength;
+            uniform float uNoiseSpeed;
+
+            varying vec3 vNormal;
+            varying vec3 vViewDir;
+            varying vec3 vPosition;
+
+            float hash(vec3 p) {
+                p = fract(p * 0.3183099 + 0.1);
+                p *= 17.0;
+                return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+            }
+
+            float noise3D(vec3 p) {
+                vec3 i = floor(p);
+                vec3 f = fract(p);
+                f = f * f * (3.0 - 2.0 * f);
+                return mix(
+                    mix(mix(hash(i), hash(i + vec3(1,0,0)), f.x),
+                        mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
+                    mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
+                        mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
+            }
+
+            void main() {
+                float dist = length(vPosition);
+                float radialGradient = 1.0 - smoothstep(0.0, 0.5, dist);
+                float fresnel = pow(1.0 - max(dot(vNormal, vViewDir), 0.0), uFresnelPower);
+                float fresnelGlow = fresnel * uFresnelIntensity;
+                vec3 noisePos = vPosition * 5.0 + vec3(uTime * uNoiseSpeed);
+                float noiseVal = noise3D(noisePos) * uNoiseStrength;
+                float brightness = radialGradient * (1.0 + noiseVal) + fresnelGlow;
+                vec3 finalColor = uCoreColor * uEmission * brightness;
+                float alpha = uOpacity * radialGradient * (0.8 + fresnelGlow * 0.5);
+                gl_FragColor = vec4(finalColor, alpha);
+            }
+        `,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide
+    });
+}
+
+// Frame-blended flipbook material (samples current + next frame and blends)
+function createFrameBlendedFlipbookMaterial(texture, cols, rows, totalFrames) {
+    return new THREE.ShaderMaterial({
+        uniforms: {
+            uTexture: { value: texture },
+            uTime: { value: 0 },
+            uCols: { value: cols },
+            uRows: { value: rows },
+            uTotalFrames: { value: totalFrames },
+            uOpacity: { value: 1.0 },
+            uScale: { value: 1.0 },
+            uEmission: { value: 2.0 },
+            uRandomZRotation: { value: Math.random() * Math.PI * 2 }
+        },
+        vertexShader: `
+            uniform float uScale;
+            varying vec2 vUv;
+            void main() {
+                vUv = uv;
+                vec3 pos = position * uScale;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform sampler2D uTexture;
+            uniform float uTime;
+            uniform float uCols;
+            uniform float uRows;
+            uniform float uTotalFrames;
+            uniform float uOpacity;
+            uniform float uEmission;
+
+            varying vec2 vUv;
+
+            vec4 sampleFrame(float frameIndex) {
+                float frame = mod(frameIndex, uTotalFrames);
+                float col = mod(frame, uCols);
+                float row = floor(frame / uCols);
+                vec2 frameSize = vec2(1.0 / uCols, 1.0 / uRows);
+                vec2 frameOffset = vec2(col * frameSize.x, 1.0 - (row + 1.0) * frameSize.y);
+                vec2 frameUV = frameOffset + vUv * frameSize;
+                return texture2D(uTexture, frameUV);
+            }
+
+            void main() {
+                float currentFrame = floor(uTime);
+                float nextFrame = currentFrame + 1.0;
+                float blendFactor = fract(uTime);
+                vec4 color1 = sampleFrame(currentFrame);
+                vec4 color2 = sampleFrame(nextFrame);
+                vec4 blendedColor = mix(color1, color2, blendFactor);
+                vec2 center = vUv - 0.5;
+                float dist = length(center) * 2.0;
+                float edgeFade = 1.0 - smoothstep(0.7, 1.0, dist);
+                vec3 finalColor = blendedColor.rgb * uEmission;
+                float alpha = blendedColor.a * uOpacity * edgeFade;
+                gl_FragColor = vec4(finalColor, alpha);
+            }
+        `,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide
+    });
+}
+
+// Legacy flipbook material for sparks (simpler, no frame blending needed)
+function createFlipbookMaterial(texture, cols, rows, totalFrames) {
+    return new THREE.ShaderMaterial({
         uniforms: {
             uTexture: { value: texture },
             uFrame: { value: 0 },
@@ -4983,29 +5139,15 @@ function createFlipbookMaterial(texture, cols, rows, totalFrames, phaseOffset = 
             uTotalFrames: { value: totalFrames },
             uOpacity: { value: 1.0 },
             uScale: { value: 1.0 },
-            uColor: { value: new THREE.Color(1, 1, 1) },
-            uEmission: { value: 3.0 },
-            uPhaseOffset: { value: phaseOffset },
-            uAlphaMultiplier: { value: alphaMultiplier },
-            uFresnelPower: { value: 3.5 },
-            uFresnelIntensity: { value: 0.6 },
-            uEdgeSoftness: { value: 0.4 }
+            uEmission: { value: 2.0 }
         },
         vertexShader: `
             uniform float uScale;
             varying vec2 vUv;
-            varying vec3 vNormal;
-            varying vec3 vViewDir;
-            varying float vDepth;
             void main() {
                 vUv = uv;
-                vNormal = normalize(normalMatrix * normal);
-                vec4 worldPos = modelMatrix * vec4(position, 1.0);
-                vViewDir = normalize(cameraPosition - worldPos.xyz);
                 vec3 pos = position * uScale;
-                vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
-                vDepth = -mvPos.z;
-                gl_Position = projectionMatrix * mvPos;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
             }
         `,
         fragmentShader: `
@@ -5015,53 +5157,20 @@ function createFlipbookMaterial(texture, cols, rows, totalFrames, phaseOffset = 
             uniform float uRows;
             uniform float uTotalFrames;
             uniform float uOpacity;
-            uniform vec3 uColor;
             uniform float uEmission;
-            uniform float uPhaseOffset;
-            uniform float uAlphaMultiplier;
-            uniform float uFresnelPower;
-            uniform float uFresnelIntensity;
-            uniform float uEdgeSoftness;
 
             varying vec2 vUv;
-            varying vec3 vNormal;
-            varying vec3 vViewDir;
-            varying float vDepth;
 
             void main() {
                 float frame = floor(mod(uFrame, uTotalFrames));
                 float col = mod(frame, uCols);
                 float row = floor(frame / uCols);
-
                 vec2 frameSize = vec2(1.0 / uCols, 1.0 / uRows);
                 vec2 frameOffset = vec2(col * frameSize.x, 1.0 - (row + 1.0) * frameSize.y);
                 vec2 frameUV = frameOffset + vUv * frameSize;
-
                 vec4 texColor = texture2D(uTexture, frameUV);
-
-                // Strong radial falloff - brighten core significantly, fade edges aggressively
-                vec2 center = vUv - 0.5;
-                float dist = length(center) * 2.0;
-                float radialFalloff = 1.0 - smoothstep(0.0, 1.0 - uEdgeSoftness, dist);
-                float edgeFade = 1.0 - smoothstep(0.6, 1.0, dist);
-
-                // Strong Fresnel effect - view-dependent brightness for volumetric illusion
-                float fresnel = pow(1.0 - max(dot(vNormal, vViewDir), 0.0), uFresnelPower);
-                float fresnelBoost = 1.0 + fresnel * uFresnelIntensity;
-                float rimDarken = 1.0 - fresnel * 0.3;
-
-                // Core brightening based on radial position (stronger effect)
-                float coreBrightness = 1.0 + radialFalloff * 0.8;
-
-                // Depth-based alpha fading to reduce visible sprite edges
-                float depthFade = smoothstep(0.0, 200.0, vDepth);
-
-                // Combine effects with emission for HDR overbright
-                vec3 finalColor = texColor.rgb * uColor * uEmission * coreBrightness * fresnelBoost * rimDarken;
-
-                // Alpha with strong radial edge fade and depth-based fading
-                float alpha = texColor.a * uOpacity * uAlphaMultiplier * edgeFade * (0.5 + radialFalloff * 0.5);
-
+                vec3 finalColor = texColor.rgb * uEmission;
+                float alpha = texColor.a * uOpacity;
                 gl_FragColor = vec4(finalColor, alpha);
             }
         `,
@@ -5070,11 +5179,9 @@ function createFlipbookMaterial(texture, cols, rows, totalFrames, phaseOffset = 
         depthWrite: false,
         side: THREE.DoubleSide
     });
-
-    return material;
 }
 
-// Create fireball projectile for 5x weapon
+// Create fireball projectile for 5x weapon (AAA structure: CoreSphere + InnerFlame + OuterFlame)
 function createFireballProjectile(position, direction, weaponKey) {
     if (!fireballVFXState.texturesLoaded || weaponKey !== '5x') return null;
 
@@ -5082,43 +5189,36 @@ function createFireballProjectile(position, direction, weaponKey) {
     const flipbookConfig = config.flipbook;
     const projectileConfig = config.projectile;
 
-    // Create fireball group
     const fireballGroup = new THREE.Group();
     fireballGroup.position.copy(position);
 
-    // Multi-plane layered sprites for depth/volume (Unity VFX Graph style)
-    // Uses 3D rotation distribution (X, Y, Z axes) to eliminate visible rectangle planes
-    const corePlanes = [];
-    const coreMaterials = [];
-    const planeCount = projectileConfig.planeCount || 8;
+    const coreGeometry = new THREE.SphereGeometry(projectileConfig.coreSize * 0.5, 16, 16);
+    const coreMaterial = createProceduralCoreMaterial();
+    const coreMesh = new THREE.Mesh(coreGeometry, coreMaterial);
+    fireballGroup.add(coreMesh);
 
-    for (let i = 0; i < planeCount; i++) {
-        const planeScale = projectileConfig.planeScales[i] || 1.0;
-        const rotation = projectileConfig.planeRotations[i] || { x: 0, y: 0, z: 0 };
-        const phaseOffset = projectileConfig.planePhaseOffsets[i] || 0;
-        const alphaMultiplier = projectileConfig.planeAlphaMultipliers[i] || 1.0;
+    const innerFlameGeometry = new THREE.PlaneGeometry(projectileConfig.innerFlameSize, projectileConfig.innerFlameSize);
+    const innerFlameMaterial = createFrameBlendedFlipbookMaterial(
+        fireballVFXState.textures.innerFlame,
+        flipbookConfig.innerFlameCols,
+        flipbookConfig.innerFlameRows,
+        flipbookConfig.innerFlameFrames
+    );
+    const innerFlameMesh = new THREE.Mesh(innerFlameGeometry, innerFlameMaterial);
+    innerFlameMesh.userData.randomZRotation = Math.random() * Math.PI * 2;
+    fireballGroup.add(innerFlameMesh);
 
-        const coreGeometry = new THREE.PlaneGeometry(
-            config.projectile.size * planeScale,
-            config.projectile.size * planeScale
-        );
-        const coreMaterial = createFlipbookMaterial(
-            fireballVFXState.textures.coreProjectile,
-            flipbookConfig.coreCols,
-            flipbookConfig.coreRows,
-            flipbookConfig.coreFrames,
-            phaseOffset,
-            alphaMultiplier
-        );
-        const coreMesh = new THREE.Mesh(coreGeometry, coreMaterial);
-        // Apply 3D rotation (X, Y, Z axes) for spherical distribution
-        coreMesh.rotation.x = (rotation.x || 0) * Math.PI / 180;
-        coreMesh.rotation.y = (rotation.y || 0) * Math.PI / 180;
-        coreMesh.rotation.z = (rotation.z || 0) * Math.PI / 180;
-        fireballGroup.add(coreMesh);
-        corePlanes.push(coreMesh);
-        coreMaterials.push(coreMaterial);
-    }
+    const outerFlameGeometry = new THREE.PlaneGeometry(projectileConfig.outerFlameSize, projectileConfig.outerFlameSize);
+    const outerFlameMaterial = createFrameBlendedFlipbookMaterial(
+        fireballVFXState.textures.outerFlame,
+        flipbookConfig.outerFlameCols,
+        flipbookConfig.outerFlameRows,
+        flipbookConfig.outerFlameFrames
+    );
+    outerFlameMaterial.uniforms.uEmission.value = 1.5;
+    const outerFlameMesh = new THREE.Mesh(outerFlameGeometry, outerFlameMaterial);
+    outerFlameMesh.userData.randomZRotation = Math.random() * Math.PI * 2;
+    fireballGroup.add(outerFlameMesh);
 
     // Trail ribbon
     const trailPoints = [];
@@ -5189,14 +5289,15 @@ function createFireballProjectile(position, direction, weaponKey) {
     const trailMesh = new THREE.Mesh(trailGeometry, trailMaterial);
     scene.add(trailMesh);
 
-    // Create fireball object with multi-plane support and lifetime tracking
     const maxLifetime = 4;
     const fireball = {
         group: fireballGroup,
-        corePlanes: corePlanes,
-        coreMaterials: coreMaterials,
-        coreMesh: corePlanes[0],
-        coreMaterial: coreMaterials[0],
+        coreMesh: coreMesh,
+        coreMaterial: coreMaterial,
+        innerFlameMesh: innerFlameMesh,
+        innerFlameMaterial: innerFlameMaterial,
+        outerFlameMesh: outerFlameMesh,
+        outerFlameMaterial: outerFlameMaterial,
         trailMesh: trailMesh,
         trailGeometry: trailGeometry,
         trailMaterial: trailMaterial,
@@ -5207,8 +5308,8 @@ function createFireballProjectile(position, direction, weaponKey) {
         lifetime: maxLifetime,
         maxLifetime: maxLifetime,
         elapsedTime: 0,
-        frameTime: 0,
-        currentFrame: 0,
+        innerFlameTime: 0,
+        outerFlameTime: 0,
         sparkTimer: 0,
         active: true
     };
@@ -5267,75 +5368,42 @@ function spawnFireballSparks(position, direction, count) {
     }
 }
 
-// Create impact effect with multi-plane layered sprites
+// Create impact effect with 64-frame flipbook and frame blending
 function createFireballImpact(position, direction) {
     if (!fireballVFXState.texturesLoaded) return;
 
     const config = FIREBALL_VFX_CONFIG.impact;
     const flipbookConfig = FIREBALL_VFX_CONFIG.flipbook;
 
-    // Create impact group for multi-plane layering
-    const impactGroup = new THREE.Group();
-    impactGroup.position.copy(position);
+    const impactGeometry = new THREE.PlaneGeometry(config.size, config.size);
+    const impactMaterial = createFrameBlendedFlipbookMaterial(
+        fireballVFXState.textures.impactExplosion,
+        flipbookConfig.impactCols,
+        flipbookConfig.impactRows,
+        flipbookConfig.impactFrames
+    );
+    impactMaterial.uniforms.uEmission.value = 2.5;
 
-    // Multi-plane layered sprites for depth/volume (Unity VFX Graph style)
-    // Uses 3D rotation distribution (X, Y, Z axes) to eliminate visible rectangle planes
-    const impactPlanes = [];
-    const impactMaterials = [];
-    const planeCount = config.planeCount || 8;
-
-    for (let i = 0; i < planeCount; i++) {
-        const planeScale = config.planeScales[i] || 1.0;
-        const rotation = config.planeRotations[i] || { x: 0, y: 0, z: 0 };
-        const phaseOffset = config.planePhaseOffsets[i] || 0;
-        const alphaMultiplier = config.planeAlphaMultipliers[i] || 1.0;
-
-        const impactGeometry = new THREE.PlaneGeometry(
-            config.size * planeScale,
-            config.size * planeScale
-        );
-        const impactMaterial = createFlipbookMaterial(
-            fireballVFXState.textures.explosion,
-            flipbookConfig.impactCols,
-            flipbookConfig.impactRows,
-            flipbookConfig.impactFrames,
-            phaseOffset,
-            alphaMultiplier
-        );
-
-        const impactMesh = new THREE.Mesh(impactGeometry, impactMaterial);
-        // Apply 3D rotation (X, Y, Z axes) for spherical distribution
-        impactMesh.rotation.x = (rotation.x || 0) * Math.PI / 180;
-        impactMesh.rotation.y = (rotation.y || 0) * Math.PI / 180;
-        impactMesh.rotation.z = (rotation.z || 0) * Math.PI / 180;
-        impactGroup.add(impactMesh);
-        impactPlanes.push(impactMesh);
-        impactMaterials.push(impactMaterial);
-    }
+    const impactMesh = new THREE.Mesh(impactGeometry, impactMaterial);
+    impactMesh.position.copy(position);
+    impactMesh.userData.randomZRotation = Math.random() * Math.PI * 2;
 
     const impact = {
-        group: impactGroup,
-        planes: impactPlanes,
-        materials: impactMaterials,
-        mesh: impactPlanes[0],
-        material: impactMaterials[0],
+        mesh: impactMesh,
+        material: impactMaterial,
         position: position.clone(),
         lifetime: config.duration,
         maxLifetime: config.duration,
         elapsedTime: 0,
-        frameTime: 0,
-        currentFrame: 0,
+        animationTime: 0,
         initialScale: 1.0,
         active: true
     };
 
-    scene.add(impactGroup);
+    scene.add(impactMesh);
     fireballVFXState.activeImpacts.push(impact);
 
-    // Spawn secondary spark burst
     spawnFireballSparks(position, direction, config.sparkBurstCount);
-
-    // Trigger camera shake
     triggerFireballCameraShake();
 
     return impact;
@@ -5375,7 +5443,7 @@ function updateFireballVFX(deltaTime) {
         fireballVFXState.distortionUniforms.uProjectileCount.value = positions.length;
     }
 
-    // Update active fireballs
+    // Update active fireballs (new AAA structure: CoreSphere + InnerFlame + OuterFlame)
     for (let i = fireballVFXState.activeFireballs.length - 1; i >= 0; i--) {
         const fireball = fireballVFXState.activeFireballs[i];
         if (!fireball.active) continue;
@@ -5389,92 +5457,52 @@ function updateFireballVFX(deltaTime) {
             continue;
         }
 
-        // Calculate lifetime progress for curve-based animation (0 to 1)
         const lifeProgress = Math.min(1, fireball.elapsedTime / fireball.maxLifetime);
-
-        // Non-linear lifetime-to-frame mapping (fast start, slow end) - ease-out curve
-        const nonLinearProgress = 1 - Math.pow(1 - lifeProgress, 0.6);
-
-        // Update position
         const movement = fireball.velocity.clone().multiplyScalar(deltaTime);
         fireball.position.add(movement);
         fireball.group.position.copy(fireball.position);
 
-        // Evaluate curves for scale, alpha, and emission
         const curveScale = evaluateVFXCurve(config.curves.scale, lifeProgress);
         const curveAlpha = evaluateVFXCurve(config.curves.alpha, lifeProgress);
         const curveEmission = evaluateVFXCurve(config.curves.emission, lifeProgress);
 
-        // Update all planes with curve values and per-plane phase offsets
-        if (fireball.corePlanes && fireball.coreMaterials) {
-            const projectileConfig = config.projectile;
-            for (let p = 0; p < fireball.corePlanes.length; p++) {
-                const mat = fireball.coreMaterials[p];
-                const phaseOffset = projectileConfig.planePhaseOffsets[p] || 0;
-                // Per-plane frame with phase offset for desynchronized animation
-                const planeProgress = (nonLinearProgress + phaseOffset) % 1.0;
-                const frameIndex = Math.floor(planeProgress * flipbookConfig.coreFrames);
-                mat.uniforms.uFrame.value = Math.min(frameIndex, flipbookConfig.coreFrames - 1);
-                mat.uniforms.uScale.value = curveScale;
-                mat.uniforms.uOpacity.value = curveAlpha;
-                mat.uniforms.uEmission.value = curveEmission;
-            }
-        } else {
-            const frameIndex = Math.floor(nonLinearProgress * flipbookConfig.coreFrames);
-            fireball.coreMaterial.uniforms.uFrame.value = Math.min(frameIndex, flipbookConfig.coreFrames - 1);
-            fireball.coreMaterial.uniforms.uScale.value = curveScale;
-            fireball.coreMaterial.uniforms.uOpacity.value = curveAlpha;
-            fireball.coreMaterial.uniforms.uEmission.value = curveEmission;
-        }
+        fireball.coreMaterial.uniforms.uTime.value = fireball.elapsedTime;
+        fireball.coreMaterial.uniforms.uOpacity.value = curveAlpha;
+        fireball.coreMaterial.uniforms.uScale.value = curveScale;
 
-        // Orient all fireball planes to point toward travel direction with 3D rotation distribution
+        const innerEasedTime = Math.pow(fireball.elapsedTime * config.projectile.innerFlameSpeed, 0.55);
+        fireball.innerFlameTime = innerEasedTime * flipbookConfig.innerFlameFrames;
+        fireball.innerFlameMaterial.uniforms.uTime.value = fireball.innerFlameTime;
+        fireball.innerFlameMaterial.uniforms.uOpacity.value = curveAlpha;
+        fireball.innerFlameMaterial.uniforms.uScale.value = curveScale * 0.9;
+        fireball.innerFlameMaterial.uniforms.uEmission.value = curveEmission * 1.2;
+
+        const outerEasedTime = Math.pow(fireball.elapsedTime * config.projectile.outerFlameSpeed, 0.55);
+        fireball.outerFlameTime = outerEasedTime * flipbookConfig.outerFlameFrames;
+        fireball.outerFlameMaterial.uniforms.uTime.value = fireball.outerFlameTime;
+        fireball.outerFlameMaterial.uniforms.uOpacity.value = curveAlpha * 0.8;
+        fireball.outerFlameMaterial.uniforms.uScale.value = curveScale;
+        fireball.outerFlameMaterial.uniforms.uEmission.value = curveEmission * 0.8;
+
         if (camera) {
-            const velocityDir = fireball.velocity.clone().normalize();
-            const toCamera = camera.position.clone().sub(fireball.position).normalize();
-            const right = new THREE.Vector3().crossVectors(velocityDir, toCamera).normalize();
-            const forward = new THREE.Vector3().crossVectors(right, velocityDir).normalize();
-
-            const rotMatrix = new THREE.Matrix4();
-            rotMatrix.makeBasis(right, velocityDir, forward);
-            const baseQuaternion = new THREE.Quaternion().setFromRotationMatrix(rotMatrix);
-
-            // Apply rotation to all planes with 3D rotation distribution (X, Y, Z axes)
-            if (fireball.corePlanes) {
-                const projectileConfig = config.projectile;
-                for (let p = 0; p < fireball.corePlanes.length; p++) {
-                    const plane = fireball.corePlanes[p];
-                    const rotation = projectileConfig.planeRotations[p] || { x: 0, y: 0, z: 0 };
-                    const planeQuat = baseQuaternion.clone();
-                    // Apply 3D rotation offsets for spherical distribution
-                    const euler = new THREE.Euler(
-                        (rotation.x || 0) * Math.PI / 180,
-                        (rotation.y || 0) * Math.PI / 180,
-                        (rotation.z || 0) * Math.PI / 180
-                    );
-                    const offsetQuat = new THREE.Quaternion().setFromEuler(euler);
-                    planeQuat.multiply(offsetQuat);
-                    plane.quaternion.copy(planeQuat);
-                }
-            } else {
-                fireball.coreMesh.quaternion.copy(baseQuaternion);
-            }
+            fireball.innerFlameMesh.lookAt(camera.position);
+            fireball.innerFlameMesh.rotateZ(fireball.innerFlameMesh.userData.randomZRotation);
+            fireball.outerFlameMesh.lookAt(camera.position);
+            fireball.outerFlameMesh.rotateZ(fireball.outerFlameMesh.userData.randomZRotation);
         }
 
-        // Update trail
         updateFireballTrail(fireball, deltaTime);
 
-        // Spawn trailing sparks
         fireball.sparkTimer += deltaTime;
         if (fireball.sparkTimer >= config.sparks.trailEmitRate) {
             spawnFireballSparks(fireball.position, fireball.direction, 1);
             fireball.sparkTimer = 0;
         }
 
-        // Update trail material time
         fireball.trailMaterial.uniforms.uTime.value += deltaTime;
     }
 
-    // Update active impacts with lifetime-based animation and curves
+    // Update active impacts with frame-blended 64f flipbook animation
     for (let i = fireballVFXState.activeImpacts.length - 1; i >= 0; i--) {
         const impact = fireballVFXState.activeImpacts[i];
         if (!impact.active) continue;
@@ -5484,78 +5512,27 @@ function updateFireballVFX(deltaTime) {
         const lifeProgress = Math.min(1, impact.elapsedTime / impact.maxLifetime);
 
         if (impact.lifetime <= 0) {
-            if (impact.group) {
-                scene.remove(impact.group);
-                if (impact.planes) {
-                    for (const plane of impact.planes) {
-                        plane.geometry.dispose();
-                    }
-                }
-                if (impact.materials) {
-                    for (const mat of impact.materials) {
-                        mat.dispose();
-                    }
-                }
-            } else {
-                scene.remove(impact.mesh);
-                impact.mesh.geometry.dispose();
-                impact.material.dispose();
-            }
+            scene.remove(impact.mesh);
+            impact.mesh.geometry.dispose();
+            impact.material.dispose();
             fireballVFXState.activeImpacts.splice(i, 1);
             continue;
         }
 
-        // Non-linear lifetime-to-frame mapping (fast start, slow end) - ease-out curve
-        const nonLinearProgress = 1 - Math.pow(1 - lifeProgress, 0.6);
-
-        // Evaluate curves for scale, alpha, and emission
         const curveScale = evaluateVFXCurve(config.curves.scale, lifeProgress);
         const curveAlpha = evaluateVFXCurve(config.curves.alpha, lifeProgress);
         const curveEmission = evaluateVFXCurve(config.curves.emission, lifeProgress);
 
-        // Update all planes with curve values and per-plane phase offsets
-        if (impact.planes && impact.materials) {
-            const impactConfig = config.impact;
-            for (let p = 0; p < impact.planes.length; p++) {
-                const mat = impact.materials[p];
-                const phaseOffset = impactConfig.planePhaseOffsets[p] || 0;
-                // Per-plane frame with phase offset for desynchronized animation
-                const planeProgress = (nonLinearProgress + phaseOffset) % 1.0;
-                const frameIndex = Math.floor(planeProgress * flipbookConfig.impactFrames);
-                mat.uniforms.uFrame.value = Math.min(frameIndex, flipbookConfig.impactFrames - 1);
-                mat.uniforms.uScale.value = curveScale * impactConfig.scaleUp;
-                mat.uniforms.uOpacity.value = curveAlpha;
-                mat.uniforms.uEmission.value = curveEmission;
-            }
-        } else {
-            const frameIndex = Math.floor(nonLinearProgress * flipbookConfig.impactFrames);
-            impact.material.uniforms.uFrame.value = Math.min(frameIndex, flipbookConfig.impactFrames - 1);
-            impact.material.uniforms.uScale.value = curveScale * config.impact.scaleUp;
-            impact.material.uniforms.uOpacity.value = curveAlpha;
-            impact.material.uniforms.uEmission.value = curveEmission;
-        }
+        const easedTime = Math.pow(impact.elapsedTime / impact.maxLifetime, 0.55);
+        impact.animationTime = easedTime * flipbookConfig.impactFrames;
+        impact.material.uniforms.uTime.value = impact.animationTime;
+        impact.material.uniforms.uScale.value = curveScale * config.impact.scaleUp;
+        impact.material.uniforms.uOpacity.value = curveAlpha;
+        impact.material.uniforms.uEmission.value = curveEmission;
 
-        // Billboard all planes to face camera with 3D rotation distribution
         if (camera) {
-            if (impact.planes) {
-                const impactConfig = config.impact;
-                for (let p = 0; p < impact.planes.length; p++) {
-                    const plane = impact.planes[p];
-                    const rotation = impactConfig.planeRotations[p] || { x: 0, y: 0, z: 0 };
-                    const baseQuat = camera.quaternion.clone();
-                    // Apply 3D rotation offsets for spherical distribution
-                    const euler = new THREE.Euler(
-                        (rotation.x || 0) * Math.PI / 180,
-                        (rotation.y || 0) * Math.PI / 180,
-                        (rotation.z || 0) * Math.PI / 180
-                    );
-                    const offsetQuat = new THREE.Quaternion().setFromEuler(euler);
-                    baseQuat.multiply(offsetQuat);
-                    plane.quaternion.copy(baseQuat);
-                }
-            } else {
-                impact.mesh.quaternion.copy(camera.quaternion);
-            }
+            impact.mesh.lookAt(camera.position);
+            impact.mesh.rotateZ(impact.mesh.userData.randomZRotation);
         }
     }
 
@@ -5689,20 +5666,15 @@ function updateFireballCameraShake(deltaTime) {
 function deactivateFireball(fireball) {
     fireball.active = false;
 
-    // Remove from scene
     scene.remove(fireball.group);
     scene.remove(fireball.trailMesh);
 
-    // Dispose multi-plane geometries and materials
-    if (fireball.corePlanes && fireball.coreMaterials) {
-        for (let i = 0; i < fireball.corePlanes.length; i++) {
-            fireball.corePlanes[i].geometry.dispose();
-            fireball.coreMaterials[i].dispose();
-        }
-    } else {
-        fireball.coreMesh.geometry.dispose();
-        fireball.coreMaterial.dispose();
-    }
+    fireball.coreMesh.geometry.dispose();
+    fireball.coreMaterial.dispose();
+    fireball.innerFlameMesh.geometry.dispose();
+    fireball.innerFlameMaterial.dispose();
+    fireball.outerFlameMesh.geometry.dispose();
+    fireball.outerFlameMaterial.dispose();
     fireball.trailGeometry.dispose();
     fireball.trailMaterial.dispose();
 }
