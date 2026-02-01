@@ -4660,8 +4660,7 @@ const FIREBALL_VFX_CONFIG = {
         innerFlameSize: 50,
         outerFlameSize: 70,
         innerFlameSpeed: 1.5,
-        outerFlameSpeed: 0.3,
-        outerFlameOpacity: 0.5,
+        outerFlameSpeed: 0.35,
         coreColor: { r: 1.0, g: 0.9, b: 0.5 },
         coreEmission: 3.0,
         fresnelPower: 2.5,
@@ -4686,57 +4685,20 @@ const FIREBALL_VFX_CONFIG = {
         gravity: 200
     },
     flameShell: {
-        particleCount: 16,
-        radiusMultiplier: 1.15,
-        particleSize: 20,
-        lifetime: 0.5,
-        driftSpeed: 12,
-        noiseStrength: 0.4,
-        opacity: 0.35,
-        emission: 1.5
-    },
-    embers: {
-        enabled: true,
-        count: 8,
-        size: 6,
-        lifetime: 0.35,
-        speed: 80,
-        emitRate: 0.03,
-        opacity: 0.7,
-        emission: 2.0
+        particleCount: 12,
+        radiusMultiplier: 1.1,
+        particleSize: 18,
+        lifetime: 0.6,
+        driftSpeed: 8,
+        noiseStrength: 0.3,
+        opacity: 0.4,
+        emission: 1.2
     },
     impact: {
         size: 150,
         duration: 1.2,
         scaleUp: 2.0,
-        sparkBurstCount: 25,
-        coreFlash: {
-            enabled: true,
-            size: 80,
-            duration: 0.15,
-            emission: 5.0
-        },
-        shockwave: {
-            enabled: true,
-            size: 200,
-            duration: 0.4,
-            opacity: 0.6
-        },
-        expandingParticles: {
-            enabled: true,
-            count: 20,
-            size: 25,
-            lifetime: 0.6,
-            speed: 120
-        },
-        debris: {
-            enabled: true,
-            count: 12,
-            size: 8,
-            lifetime: 0.5,
-            speed: 150,
-            gravity: 300
-        }
+        sparkBurstCount: 25
     },
     postProcessing: {
         bloomThreshold: 0.4,
@@ -4812,11 +4774,6 @@ const fireballVFXState = {
     activeImpacts: [],
     activeSparks: [],
     activeFlameShellParticles: [],
-    activeEmbers: [],
-    activeCoreFlashes: [],
-    activeShockwaves: [],
-    activeExpandingParticles: [],
-    activeDebris: [],
     trailGeometryCache: null,
     sparkGeometry: null,
     composer: null,
@@ -5269,8 +5226,7 @@ function createFireballProjectile(position, direction, weaponKey) {
         flipbookConfig.outerFlameRows,
         flipbookConfig.outerFlameFrames
     );
-    outerFlameMaterial.uniforms.uEmission.value = 0.8;
-    outerFlameMaterial.uniforms.uOpacity.value = projectileConfig.outerFlameOpacity;
+    outerFlameMaterial.uniforms.uEmission.value = 1.0;
     const outerFlameMesh = new THREE.Mesh(outerFlameGeometry, outerFlameMaterial);
     outerFlameMesh.userData.randomZRotation = Math.random() * Math.PI * 2;
     fireballGroup.add(outerFlameMesh);
@@ -5368,8 +5324,6 @@ function createFireballProjectile(position, direction, weaponKey) {
         sparkTimer: 0,
         flameShellParticles: [],
         flameShellRespawnTimer: 0,
-        embers: [],
-        emberTimer: 0,
         active: true
     };
 
@@ -5377,7 +5331,6 @@ function createFireballProjectile(position, direction, weaponKey) {
     fireballVFXState.activeFireballs.push(fireball);
 
     fireball.flameShellParticles = spawnFlameShellParticles(fireball);
-    spawnEmberParticles(fireball, velocity);
 
     spawnFireballSparks(position, direction, config.sparks.burstCount * 0.5);
 
@@ -5510,276 +5463,6 @@ function spawnFlameShellParticles(fireball) {
     return particles;
 }
 
-function createEmberMaterial() {
-    return new THREE.ShaderMaterial({
-        uniforms: {
-            uOpacity: { value: 1.0 },
-            uEmission: { value: 2.0 },
-            uColor: { value: new THREE.Color(0xffaa44) }
-        },
-        vertexShader: `
-            varying vec2 vUv;
-            void main() {
-                vUv = uv;
-                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-            }
-        `,
-        fragmentShader: `
-            uniform float uOpacity;
-            uniform float uEmission;
-            uniform vec3 uColor;
-            varying vec2 vUv;
-            void main() {
-                vec2 center = vUv - 0.5;
-                float dist = length(center) * 2.0;
-                float alpha = smoothstep(1.0, 0.3, dist);
-                vec3 color = uColor * uEmission;
-                gl_FragColor = vec4(color, alpha * uOpacity);
-            }
-        `,
-        transparent: true,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        side: THREE.DoubleSide
-    });
-}
-
-function spawnEmberParticles(fireball, velocity) {
-    if (!FIREBALL_VFX_CONFIG.embers.enabled) return;
-    
-    const config = FIREBALL_VFX_CONFIG.embers;
-    const projectileConfig = FIREBALL_VFX_CONFIG.projectile;
-    const baseRadius = projectileConfig.outerFlameSize * 0.4;
-    
-    const travelDir = velocity.clone().normalize();
-    const rearDir = travelDir.clone().negate();
-    
-    for (let i = 0; i < config.count; i++) {
-        const geometry = new THREE.PlaneGeometry(config.size, config.size);
-        const material = createEmberMaterial();
-        const mesh = new THREE.Mesh(geometry, material);
-        
-        const sideOffset = new THREE.Vector3(
-            (Math.random() - 0.5) * baseRadius,
-            (Math.random() - 0.5) * baseRadius,
-            (Math.random() - 0.5) * baseRadius
-        );
-        const rearOffset = rearDir.clone().multiplyScalar(baseRadius * (0.3 + Math.random() * 0.5));
-        const spawnPos = sideOffset.add(rearOffset);
-        
-        mesh.position.copy(spawnPos);
-        
-        const emberVelocity = rearDir.clone()
-            .multiplyScalar(config.speed * (0.5 + Math.random() * 0.5))
-            .add(new THREE.Vector3(
-                (Math.random() - 0.5) * config.speed * 0.3,
-                (Math.random() - 0.5) * config.speed * 0.3,
-                (Math.random() - 0.5) * config.speed * 0.3
-            ));
-        
-        const ember = {
-            mesh: mesh,
-            material: material,
-            velocity: emberVelocity,
-            lifetime: config.lifetime * (0.6 + Math.random() * 0.8),
-            maxLifetime: config.lifetime,
-            elapsedTime: 0,
-            active: true,
-            parentFireball: fireball
-        };
-        
-        fireball.group.add(mesh);
-        fireball.embers.push(ember);
-        fireballVFXState.activeEmbers.push(ember);
-    }
-}
-
-function createCoreFlashMaterial() {
-    return new THREE.ShaderMaterial({
-        uniforms: {
-            uOpacity: { value: 1.0 },
-            uEmission: { value: 5.0 },
-            uTime: { value: 0.0 }
-        },
-        vertexShader: `
-            varying vec2 vUv;
-            void main() {
-                vUv = uv;
-                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-            }
-        `,
-        fragmentShader: `
-            uniform float uOpacity;
-            uniform float uEmission;
-            uniform float uTime;
-            varying vec2 vUv;
-            void main() {
-                vec2 center = vUv - 0.5;
-                float dist = length(center) * 2.0;
-                float alpha = smoothstep(1.0, 0.0, dist);
-                alpha *= alpha;
-                vec3 color = vec3(1.0, 0.95, 0.8) * uEmission;
-                gl_FragColor = vec4(color, alpha * uOpacity);
-            }
-        `,
-        transparent: true,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        side: THREE.DoubleSide
-    });
-}
-
-function createShockwaveMaterial() {
-    return new THREE.ShaderMaterial({
-        uniforms: {
-            uOpacity: { value: 0.6 },
-            uProgress: { value: 0.0 }
-        },
-        vertexShader: `
-            varying vec2 vUv;
-            void main() {
-                vUv = uv;
-                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-            }
-        `,
-        fragmentShader: `
-            uniform float uOpacity;
-            uniform float uProgress;
-            varying vec2 vUv;
-            void main() {
-                vec2 center = vUv - 0.5;
-                float dist = length(center) * 2.0;
-                float ring = smoothstep(0.8, 0.9, dist) * smoothstep(1.0, 0.95, dist);
-                ring *= (1.0 - uProgress);
-                vec3 color = vec3(1.0, 0.7, 0.3);
-                gl_FragColor = vec4(color, ring * uOpacity);
-            }
-        `,
-        transparent: true,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        side: THREE.DoubleSide
-    });
-}
-
-function spawnCoreFlash(position) {
-    const config = FIREBALL_VFX_CONFIG.impact.coreFlash;
-    if (!config.enabled) return;
-    
-    const geometry = new THREE.PlaneGeometry(config.size, config.size);
-    const material = createCoreFlashMaterial();
-    material.uniforms.uEmission.value = config.emission;
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.copy(position);
-    
-    const flash = {
-        mesh: mesh,
-        material: material,
-        lifetime: config.duration,
-        maxLifetime: config.duration,
-        elapsedTime: 0,
-        active: true
-    };
-    
-    scene.add(mesh);
-    fireballVFXState.activeCoreFlashes.push(flash);
-}
-
-function spawnShockwave(position) {
-    const config = FIREBALL_VFX_CONFIG.impact.shockwave;
-    if (!config.enabled) return;
-    
-    const geometry = new THREE.PlaneGeometry(config.size, config.size);
-    const material = createShockwaveMaterial();
-    material.uniforms.uOpacity.value = config.opacity;
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.copy(position);
-    
-    const shockwave = {
-        mesh: mesh,
-        material: material,
-        lifetime: config.duration,
-        maxLifetime: config.duration,
-        elapsedTime: 0,
-        initialSize: config.size,
-        active: true
-    };
-    
-    scene.add(mesh);
-    fireballVFXState.activeShockwaves.push(shockwave);
-}
-
-function spawnExpandingParticles(position) {
-    const config = FIREBALL_VFX_CONFIG.impact.expandingParticles;
-    if (!config.enabled) return;
-    
-    for (let i = 0; i < config.count; i++) {
-        const geometry = new THREE.PlaneGeometry(config.size, config.size);
-        const material = createFlameShellParticleMaterial();
-        material.uniforms.uEmission.value = 2.0;
-        const mesh = new THREE.Mesh(geometry, material);
-        mesh.position.copy(position);
-        
-        const theta = Math.random() * Math.PI * 2;
-        const phi = Math.acos(2 * Math.random() - 1);
-        const velocity = new THREE.Vector3(
-            Math.sin(phi) * Math.cos(theta),
-            Math.sin(phi) * Math.sin(theta),
-            Math.cos(phi)
-        ).multiplyScalar(config.speed * (0.5 + Math.random() * 0.5));
-        
-        const particle = {
-            mesh: mesh,
-            material: material,
-            position: position.clone(),
-            velocity: velocity,
-            lifetime: config.lifetime * (0.7 + Math.random() * 0.6),
-            maxLifetime: config.lifetime,
-            elapsedTime: 0,
-            active: true
-        };
-        
-        scene.add(mesh);
-        fireballVFXState.activeExpandingParticles.push(particle);
-    }
-}
-
-function spawnDebrisParticles(position) {
-    const config = FIREBALL_VFX_CONFIG.impact.debris;
-    if (!config.enabled) return;
-    
-    for (let i = 0; i < config.count; i++) {
-        const geometry = new THREE.PlaneGeometry(config.size, config.size);
-        const material = createEmberMaterial();
-        material.uniforms.uColor.value = new THREE.Color(0xff6622);
-        const mesh = new THREE.Mesh(geometry, material);
-        mesh.position.copy(position);
-        
-        const theta = Math.random() * Math.PI * 2;
-        const phi = Math.acos(2 * Math.random() - 1);
-        const velocity = new THREE.Vector3(
-            Math.sin(phi) * Math.cos(theta),
-            Math.sin(phi) * Math.sin(theta) + 0.5,
-            Math.cos(phi)
-        ).multiplyScalar(config.speed * (0.5 + Math.random() * 0.5));
-        
-        const debris = {
-            mesh: mesh,
-            material: material,
-            position: position.clone(),
-            velocity: velocity,
-            gravity: config.gravity,
-            lifetime: config.lifetime * (0.6 + Math.random() * 0.8),
-            maxLifetime: config.lifetime,
-            elapsedTime: 0,
-            active: true
-        };
-        
-        scene.add(mesh);
-        fireballVFXState.activeDebris.push(debris);
-    }
-}
-
 // Create impact effect with 64-frame flipbook and frame blending
 function createFireballImpact(position, direction) {
     if (!fireballVFXState.texturesLoaded) return;
@@ -5815,10 +5498,6 @@ function createFireballImpact(position, direction) {
     scene.add(impactMesh);
     fireballVFXState.activeImpacts.push(impact);
 
-    spawnCoreFlash(position);
-    spawnShockwave(position);
-    spawnExpandingParticles(position);
-    spawnDebrisParticles(position);
     spawnFireballSparks(position, direction, config.sparkBurstCount);
     triggerFireballCameraShake();
 
@@ -6046,143 +5725,6 @@ function updateFireballVFX(deltaTime) {
             }
             fireball.flameShellRespawnTimer = 0;
         }
-
-        fireball.emberTimer += deltaTime;
-        if (fireball.emberTimer >= config.embers.emitRate) {
-            spawnEmberParticles(fireball, fireball.velocity);
-            fireball.emberTimer = 0;
-        }
-    }
-
-    const emberConfig = config.embers;
-    for (let i = fireballVFXState.activeEmbers.length - 1; i >= 0; i--) {
-        const ember = fireballVFXState.activeEmbers[i];
-        if (!ember.active) continue;
-
-        ember.elapsedTime += deltaTime;
-        ember.lifetime -= deltaTime;
-        const lifeProgress = ember.elapsedTime / ember.maxLifetime;
-
-        if (ember.lifetime <= 0 || !ember.parentFireball || !ember.parentFireball.active) {
-            if (ember.parentFireball && ember.parentFireball.group) {
-                ember.parentFireball.group.remove(ember.mesh);
-            }
-            ember.mesh.geometry.dispose();
-            ember.material.dispose();
-            fireballVFXState.activeEmbers.splice(i, 1);
-            continue;
-        }
-
-        ember.mesh.position.add(ember.velocity.clone().multiplyScalar(deltaTime));
-        const fadeAlpha = 1.0 - Math.pow(lifeProgress, 0.5);
-        ember.material.uniforms.uOpacity.value = emberConfig.opacity * fadeAlpha;
-
-        if (camera) {
-            ember.mesh.lookAt(camera.position);
-        }
-    }
-
-    for (let i = fireballVFXState.activeCoreFlashes.length - 1; i >= 0; i--) {
-        const flash = fireballVFXState.activeCoreFlashes[i];
-        if (!flash.active) continue;
-
-        flash.elapsedTime += deltaTime;
-        flash.lifetime -= deltaTime;
-        const lifeProgress = flash.elapsedTime / flash.maxLifetime;
-
-        if (flash.lifetime <= 0) {
-            scene.remove(flash.mesh);
-            flash.mesh.geometry.dispose();
-            flash.material.dispose();
-            fireballVFXState.activeCoreFlashes.splice(i, 1);
-            continue;
-        }
-
-        const fadeAlpha = 1.0 - Math.pow(lifeProgress, 0.3);
-        flash.material.uniforms.uOpacity.value = fadeAlpha;
-        const scale = 1.0 + lifeProgress * 0.5;
-        flash.mesh.scale.setScalar(scale);
-
-        if (camera) {
-            flash.mesh.lookAt(camera.position);
-        }
-    }
-
-    for (let i = fireballVFXState.activeShockwaves.length - 1; i >= 0; i--) {
-        const shockwave = fireballVFXState.activeShockwaves[i];
-        if (!shockwave.active) continue;
-
-        shockwave.elapsedTime += deltaTime;
-        shockwave.lifetime -= deltaTime;
-        const lifeProgress = shockwave.elapsedTime / shockwave.maxLifetime;
-
-        if (shockwave.lifetime <= 0) {
-            scene.remove(shockwave.mesh);
-            shockwave.mesh.geometry.dispose();
-            shockwave.material.dispose();
-            fireballVFXState.activeShockwaves.splice(i, 1);
-            continue;
-        }
-
-        shockwave.material.uniforms.uProgress.value = lifeProgress;
-        const scale = 1.0 + lifeProgress * 2.0;
-        shockwave.mesh.scale.setScalar(scale);
-
-        if (camera) {
-            shockwave.mesh.lookAt(camera.position);
-        }
-    }
-
-    for (let i = fireballVFXState.activeExpandingParticles.length - 1; i >= 0; i--) {
-        const particle = fireballVFXState.activeExpandingParticles[i];
-        if (!particle.active) continue;
-
-        particle.elapsedTime += deltaTime;
-        particle.lifetime -= deltaTime;
-        const lifeProgress = particle.elapsedTime / particle.maxLifetime;
-
-        if (particle.lifetime <= 0) {
-            scene.remove(particle.mesh);
-            particle.mesh.geometry.dispose();
-            particle.material.dispose();
-            fireballVFXState.activeExpandingParticles.splice(i, 1);
-            continue;
-        }
-
-        particle.mesh.position.add(particle.velocity.clone().multiplyScalar(deltaTime));
-        const fadeAlpha = 1.0 - Math.pow(lifeProgress, 0.6);
-        particle.material.uniforms.uOpacity.value = fadeAlpha;
-        particle.material.uniforms.uTime.value = particle.elapsedTime;
-
-        if (camera) {
-            particle.mesh.lookAt(camera.position);
-        }
-    }
-
-    for (let i = fireballVFXState.activeDebris.length - 1; i >= 0; i--) {
-        const debris = fireballVFXState.activeDebris[i];
-        if (!debris.active) continue;
-
-        debris.elapsedTime += deltaTime;
-        debris.lifetime -= deltaTime;
-        const lifeProgress = debris.elapsedTime / debris.maxLifetime;
-
-        if (debris.lifetime <= 0) {
-            scene.remove(debris.mesh);
-            debris.mesh.geometry.dispose();
-            debris.material.dispose();
-            fireballVFXState.activeDebris.splice(i, 1);
-            continue;
-        }
-
-        debris.velocity.y -= debris.gravity * deltaTime;
-        debris.mesh.position.add(debris.velocity.clone().multiplyScalar(deltaTime));
-        const fadeAlpha = 1.0 - Math.pow(lifeProgress, 0.5);
-        debris.material.uniforms.uOpacity.value = fadeAlpha;
-
-        if (camera) {
-            debris.mesh.lookAt(camera.position);
-        }
     }
 
     // Update camera shake
@@ -6289,22 +5831,6 @@ function deactivateFireball(fireball) {
             }
         }
         fireball.flameShellParticles = [];
-    }
-
-    if (fireball.embers) {
-        for (const ember of fireball.embers) {
-            if (ember.active) {
-                ember.active = false;
-                fireball.group.remove(ember.mesh);
-                ember.mesh.geometry.dispose();
-                ember.material.dispose();
-                const idx = fireballVFXState.activeEmbers.indexOf(ember);
-                if (idx !== -1) {
-                    fireballVFXState.activeEmbers.splice(idx, 1);
-                }
-            }
-        }
-        fireball.embers = [];
     }
 
     scene.remove(fireball.group);
