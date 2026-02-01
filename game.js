@@ -4660,7 +4660,7 @@ const FIREBALL_VFX_CONFIG = {
         innerFlameSize: 50,
         outerFlameSize: 70,
         innerFlameSpeed: 1.5,
-        outerFlameSpeed: 0.8,
+        outerFlameSpeed: 0.35,
         coreColor: { r: 1.0, g: 0.9, b: 0.5 },
         coreEmission: 3.0,
         fresnelPower: 2.5,
@@ -4683,6 +4683,16 @@ const FIREBALL_VFX_CONFIG = {
         size: 8,
         speed: 150,
         gravity: 200
+    },
+    flameShell: {
+        particleCount: 12,
+        radiusMultiplier: 1.1,
+        particleSize: 18,
+        lifetime: 0.6,
+        driftSpeed: 8,
+        noiseStrength: 0.3,
+        opacity: 0.4,
+        emission: 1.2
     },
     impact: {
         size: 150,
@@ -4763,6 +4773,7 @@ const fireballVFXState = {
     activeFireballs: [],
     activeImpacts: [],
     activeSparks: [],
+    activeFlameShellParticles: [],
     trailGeometryCache: null,
     sparkGeometry: null,
     composer: null,
@@ -5215,7 +5226,7 @@ function createFireballProjectile(position, direction, weaponKey) {
         flipbookConfig.outerFlameRows,
         flipbookConfig.outerFlameFrames
     );
-    outerFlameMaterial.uniforms.uEmission.value = 1.5;
+    outerFlameMaterial.uniforms.uEmission.value = 1.0;
     const outerFlameMesh = new THREE.Mesh(outerFlameGeometry, outerFlameMaterial);
     outerFlameMesh.userData.randomZRotation = Math.random() * Math.PI * 2;
     fireballGroup.add(outerFlameMesh);
@@ -5311,13 +5322,16 @@ function createFireballProjectile(position, direction, weaponKey) {
         innerFlameTime: 0,
         outerFlameTime: 0,
         sparkTimer: 0,
+        flameShellParticles: [],
+        flameShellRespawnTimer: 0,
         active: true
     };
 
     scene.add(fireballGroup);
     fireballVFXState.activeFireballs.push(fireball);
 
-    // Spawn initial spark burst
+    fireball.flameShellParticles = spawnFlameShellParticles(fireball);
+
     spawnFireballSparks(position, direction, config.sparks.burstCount * 0.5);
 
     return fireball;
@@ -5366,6 +5380,87 @@ function spawnFireballSparks(position, direction, count) {
         scene.add(sparkMesh);
         fireballVFXState.activeSparks.push(spark);
     }
+}
+
+function createFlameShellParticleMaterial() {
+    const config = FIREBALL_VFX_CONFIG.flameShell;
+    return new THREE.ShaderMaterial({
+        uniforms: {
+            uTexture: { value: fireballVFXState.textures.spark },
+            uOpacity: { value: config.opacity },
+            uEmission: { value: config.emission },
+            uTime: { value: 0 }
+        },
+        vertexShader: `
+            varying vec2 vUv;
+            void main() {
+                vUv = uv;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform sampler2D uTexture;
+            uniform float uOpacity;
+            uniform float uEmission;
+            uniform float uTime;
+            varying vec2 vUv;
+            void main() {
+                vec4 texColor = texture2D(uTexture, vUv);
+                vec3 flameColor = vec3(1.0, 0.6, 0.2) * uEmission;
+                float dist = length(vUv - 0.5) * 2.0;
+                float softEdge = 1.0 - smoothstep(0.3, 1.0, dist);
+                float alpha = texColor.a * uOpacity * softEdge;
+                gl_FragColor = vec4(flameColor * texColor.rgb, alpha);
+            }
+        `,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide
+    });
+}
+
+function spawnFlameShellParticles(fireball) {
+    const config = FIREBALL_VFX_CONFIG.flameShell;
+    const projectileConfig = FIREBALL_VFX_CONFIG.projectile;
+    const shellRadius = projectileConfig.outerFlameSize * 0.5 * config.radiusMultiplier;
+    
+    const particles = [];
+    for (let i = 0; i < config.particleCount; i++) {
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(2 * Math.random() - 1);
+        const x = shellRadius * Math.sin(phi) * Math.cos(theta);
+        const y = shellRadius * Math.sin(phi) * Math.sin(theta);
+        const z = shellRadius * Math.cos(phi);
+        
+        const geometry = new THREE.PlaneGeometry(config.particleSize, config.particleSize);
+        const material = createFlameShellParticleMaterial();
+        const mesh = new THREE.Mesh(geometry, material);
+        
+        mesh.position.set(x, y, z);
+        mesh.userData.localOffset = new THREE.Vector3(x, y, z);
+        mesh.userData.randomZRotation = Math.random() * Math.PI * 2;
+        mesh.userData.noiseOffset = Math.random() * 100;
+        
+        const outwardDir = new THREE.Vector3(x, y, z).normalize();
+        const particle = {
+            mesh: mesh,
+            material: material,
+            localOffset: new THREE.Vector3(x, y, z),
+            velocity: outwardDir.multiplyScalar(config.driftSpeed),
+            lifetime: config.lifetime * (0.7 + Math.random() * 0.6),
+            maxLifetime: config.lifetime,
+            elapsedTime: 0,
+            active: true,
+            parentFireball: fireball
+        };
+        
+        fireball.group.add(mesh);
+        particles.push(particle);
+        fireballVFXState.activeFlameShellParticles.push(particle);
+    }
+    
+    return particles;
 }
 
 // Create impact effect with 64-frame flipbook and frame blending
@@ -5576,6 +5671,62 @@ function updateFireballVFX(deltaTime) {
         }
     }
 
+    const flameShellConfig = config.flameShell;
+    for (let i = fireballVFXState.activeFlameShellParticles.length - 1; i >= 0; i--) {
+        const particle = fireballVFXState.activeFlameShellParticles[i];
+        if (!particle.active) continue;
+
+        particle.elapsedTime += deltaTime;
+        particle.lifetime -= deltaTime;
+        const lifeProgress = particle.elapsedTime / particle.maxLifetime;
+
+        if (particle.lifetime <= 0 || !particle.parentFireball || !particle.parentFireball.active) {
+            if (particle.parentFireball && particle.parentFireball.group) {
+                particle.parentFireball.group.remove(particle.mesh);
+            }
+            particle.mesh.geometry.dispose();
+            particle.material.dispose();
+            fireballVFXState.activeFlameShellParticles.splice(i, 1);
+            continue;
+        }
+
+        const noiseTime = particle.elapsedTime + particle.mesh.userData.noiseOffset;
+        const noiseX = Math.sin(noiseTime * 3.0) * flameShellConfig.noiseStrength;
+        const noiseY = Math.cos(noiseTime * 2.5) * flameShellConfig.noiseStrength;
+        const noiseZ = Math.sin(noiseTime * 2.0 + 1.5) * flameShellConfig.noiseStrength;
+
+        const driftOffset = particle.velocity.clone().multiplyScalar(particle.elapsedTime);
+        particle.mesh.position.copy(particle.localOffset)
+            .add(driftOffset)
+            .add(new THREE.Vector3(noiseX, noiseY, noiseZ));
+
+        const fadeAlpha = 1.0 - Math.pow(lifeProgress, 0.7);
+        particle.material.uniforms.uOpacity.value = flameShellConfig.opacity * fadeAlpha;
+        particle.material.uniforms.uTime.value = particle.elapsedTime;
+
+        if (camera) {
+            particle.mesh.lookAt(camera.position);
+            particle.mesh.rotateZ(particle.mesh.userData.randomZRotation);
+        }
+    }
+
+    for (const fireball of fireballVFXState.activeFireballs) {
+        if (!fireball.active) continue;
+
+        fireball.flameShellRespawnTimer += deltaTime;
+        if (fireball.flameShellRespawnTimer >= flameShellConfig.lifetime * 0.5) {
+            const activeCount = fireball.flameShellParticles.filter(p => p.active && p.lifetime > 0).length;
+            if (activeCount < flameShellConfig.particleCount * 0.6) {
+                const toSpawn = Math.min(3, flameShellConfig.particleCount - activeCount);
+                for (let j = 0; j < toSpawn; j++) {
+                    const newParticles = spawnFlameShellParticles(fireball);
+                    fireball.flameShellParticles.push(...newParticles.slice(0, 1));
+                }
+            }
+            fireball.flameShellRespawnTimer = 0;
+        }
+    }
+
     // Update camera shake
     updateFireballCameraShake(deltaTime);
 }
@@ -5665,6 +5816,22 @@ function updateFireballCameraShake(deltaTime) {
 // Deactivate and cleanup fireball
 function deactivateFireball(fireball) {
     fireball.active = false;
+
+    if (fireball.flameShellParticles) {
+        for (const particle of fireball.flameShellParticles) {
+            if (particle.active) {
+                particle.active = false;
+                fireball.group.remove(particle.mesh);
+                particle.mesh.geometry.dispose();
+                particle.material.dispose();
+                const idx = fireballVFXState.activeFlameShellParticles.indexOf(particle);
+                if (idx !== -1) {
+                    fireballVFXState.activeFlameShellParticles.splice(idx, 1);
+                }
+            }
+        }
+        fireball.flameShellParticles = [];
+    }
 
     scene.remove(fireball.group);
     scene.remove(fireball.trailMesh);
