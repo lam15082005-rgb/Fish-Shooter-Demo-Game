@@ -4664,7 +4664,7 @@ const FIREBALL_VFX_CONFIG = {
         innerFlameSpeed: 0.4,
         coreEmission: 2.5,
         innerFlameOpacity: 0.5,
-        vertexWaveAmplitude: 0.08,
+        vertexWaveAmplitude: 0.03,
         vertexWaveSpeed: 3.0,
         rimPower: 2.0,
         rimIntensity: 0.6
@@ -4683,11 +4683,11 @@ const FIREBALL_VFX_CONFIG = {
     },
     trail: {
         maxPoints: 25,
-        width: 20,
+        width: 14,
         fadeSpeed: 4.0,
         noiseScale: 0.12,
         noiseSpeed: 2.5,
-        turbulenceStrength: 6
+        turbulenceStrength: 3
     },
     sparks: {
         burstCount: 12,
@@ -4726,12 +4726,16 @@ const FIREBALL_VFX_CONFIG = {
         noiseScale: 3.0,
         fadeDistance: 500
     },
+    flameShell: {
+        opacity: 0.35,
+        emission: 1.5
+    },
     curves: {
         scale: [
-            { t: 0.0, v: 0.3 },
-            { t: 0.1, v: 1.0 },
-            { t: 0.5, v: 1.2 },
-            { t: 1.0, v: 1.8 }
+            { t: 0.0, v: 0.5 },
+            { t: 0.2, v: 1.0 },
+            { t: 0.6, v: 1.1 },
+            { t: 1.0, v: 1.15 }
         ],
         alpha: [
             { t: 0.0, v: 0.9 },
@@ -5040,7 +5044,7 @@ function createFireballCoreMaterial(texture, cols, rows, totalFrames) {
                 float wave1 = sin(pos.x * 4.0 + uTime * uWaveSpeed) * uWaveAmplitude;
                 float wave2 = cos(pos.y * 3.5 + uTime * uWaveSpeed * 1.2) * uWaveAmplitude * 0.8;
                 float wave3 = sin(pos.z * 5.0 + uTime * uWaveSpeed * 0.9) * uWaveAmplitude * 0.6;
-                pos += normal * (wave1 + wave2 + wave3);
+                pos += normal * (wave1 + wave2 + wave3) * 0.6;
                 gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
             }
         `,
@@ -5675,10 +5679,10 @@ function updateFireballVFX(deltaTime) {
     if (fireballVFXState.distortionUniforms) {
         fireballVFXState.distortionUniforms.uTime.value += deltaTime;
 
-        // Update projectile positions for localized distortion
+        // Update projectile positions for localized distortion (fixed-size array of 10)
         const positions = [];
         for (const fireball of fireballVFXState.activeFireballs) {
-            if (fireball.active && camera) {
+            if (fireball.active && camera && positions.length < 10) {
                 // Project 3D position to screen space
                 const screenPos = fireball.position.clone().project(camera);
                 positions.push(new THREE.Vector2(
@@ -5687,8 +5691,12 @@ function updateFireballVFX(deltaTime) {
                 ));
             }
         }
+        // Pad unused slots with vec2(-1.0) to avoid shader warnings
+        while (positions.length < 10) {
+            positions.push(new THREE.Vector2(-1.0, -1.0));
+        }
         fireballVFXState.distortionUniforms.uProjectilePositions.value = positions;
-        fireballVFXState.distortionUniforms.uProjectileCount.value = positions.length;
+        fireballVFXState.distortionUniforms.uProjectileCount.value = Math.min(fireballVFXState.activeFireballs.filter(f => f.active).length, 10);
     }
 
     // Update active fireballs (Valorant-style BMS: Core flipbook + Inner flame + Flame particles)
@@ -5714,24 +5722,31 @@ function updateFireballVFX(deltaTime) {
         const curveAlpha = evaluateVFXCurve(config.curves.alpha, lifeProgress);
         const curveEmission = evaluateVFXCurve(config.curves.emission, lifeProgress);
 
+        // Clamp scale to avoid oval stretching (max 1.25)
+        const safeScale = Math.min(curveScale, 1.25);
+
         const coreEasedTime = Math.pow(fireball.elapsedTime * config.projectile.coreSpeed, 0.55);
         fireball.coreTime = coreEasedTime * flipbookConfig.fireballCoreFrames;
         fireball.coreMaterial.uniforms.uTime.value = fireball.coreTime;
         fireball.coreMaterial.uniforms.uOpacity.value = curveAlpha;
-        fireball.coreMaterial.uniforms.uScale.value = curveScale;
+        fireball.coreMaterial.uniforms.uScale.value = safeScale;
 
         const innerEasedTime = Math.pow(fireball.elapsedTime * config.projectile.innerFlameSpeed, 0.55);
         fireball.innerFlameTime = innerEasedTime * flipbookConfig.innerFlameFrames;
         fireball.innerFlameMaterial.uniforms.uTime.value = fireball.innerFlameTime;
         fireball.innerFlameMaterial.uniforms.uOpacity.value = curveAlpha * config.projectile.innerFlameOpacity;
-        fireball.innerFlameMaterial.uniforms.uScale.value = curveScale * 0.9;
+        fireball.innerFlameMaterial.uniforms.uScale.value = safeScale * 0.9;
         fireball.innerFlameMaterial.uniforms.uEmission.value = curveEmission * 1.2;
 
         if (camera) {
             fireball.coreMesh.lookAt(camera.position);
             fireball.coreMesh.rotateZ(fireball.coreMesh.userData.randomZRotation);
+            // Apply uniform scaling to prevent Z-axis stretching
+            fireball.coreMesh.scale.setScalar(fireball.coreMaterial.uniforms.uScale.value);
             fireball.innerFlameMesh.lookAt(camera.position);
             fireball.innerFlameMesh.rotateZ(fireball.innerFlameMesh.userData.randomZRotation);
+            // Apply uniform scaling to prevent Z-axis stretching
+            fireball.innerFlameMesh.scale.setScalar(fireball.innerFlameMaterial.uniforms.uScale.value);
         }
 
         updateFireballTrail(fireball, deltaTime);
