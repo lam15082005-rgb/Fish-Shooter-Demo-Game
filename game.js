@@ -4698,14 +4698,24 @@ const FIREBALL_VFX_CONFIG = {
         gravity: 180
     },
     impact: {
-        coreSize: 120,
-        duration: 0.8,
-        scaleUp: 1.8,
+        // 3-layer explosion: core flash + energy ring + flame puffs
+        coreSize: 80,
+        duration: 0.35,  // Short lifetime < 0.4s as required
+        scaleUp: 2.0,
+        // Layer 2: Energy ring
+        ringSize: 100,
+        ringDuration: 0.3,
+        // Layer 3: Flame puffs
+        puffCount: 6,
+        puffSize: 40,
+        puffLifetime: 0.35,
+        puffSpeed: 80,
+        // Debris (secondary)
         debrisCount: 8,
-        debrisSize: 35,
-        debrisLifetime: 0.5,
+        debrisSize: 25,
+        debrisLifetime: 0.4,
         debrisSpeed: 100,
-        sparkBurstCount: 20
+        sparkBurstCount: 15
     },
     postProcessing: {
         bloomThreshold: 0.85,
@@ -5009,7 +5019,8 @@ function createDistortionShaderPass() {
     }
 }
 
-// Procedural core sphere shader material (radial gradient, Fresnel glow, noise distortion)
+// Valorant-style solid core material with gradient Lambert lighting and Fresnel rim
+// Uses SphereGeometry for volumetric appearance - SOLID core, not hollow
 function createFireballCoreMaterial(texture, cols, rows, totalFrames) {
     const config = FIREBALL_VFX_CONFIG.projectile;
     return new THREE.ShaderMaterial({
@@ -5025,33 +5036,41 @@ function createFireballCoreMaterial(texture, cols, rows, totalFrames) {
             uWaveAmplitude: { value: config.vertexWaveAmplitude },
             uWaveSpeed: { value: config.vertexWaveSpeed },
             uRimPower: { value: config.rimPower },
-            uRimIntensity: { value: config.rimIntensity }
+            uRimIntensity: { value: config.rimIntensity },
+            // Gradient colors for Lambert lighting (hot core to cooler edge)
+            uColorHot: { value: new THREE.Color(1.0, 0.95, 0.8) },    // White-yellow center
+            uColorMid: { value: new THREE.Color(1.0, 0.6, 0.1) },     // Orange mid
+            uColorCool: { value: new THREE.Color(0.9, 0.2, 0.05) }    // Red-orange edge
         },
         vertexShader: `
-            uniform float uScale;
             uniform float uTime;
             uniform float uWaveAmplitude;
             uniform float uWaveSpeed;
             varying vec2 vUv;
             varying vec3 vNormal;
+            varying vec3 vWorldNormal;
             varying vec3 vViewDir;
+            varying vec3 vLocalPos;
+            
             void main() {
                 vUv = uv;
-                vNormal = normalize(normalMatrix * normal);
-                vec4 worldPos = modelMatrix * vec4(position, 1.0);
-                vViewDir = normalize(cameraPosition - worldPos.xyz);
-                // DO NOT scale here - scaling is done via mesh.scale.setScalar() to prevent double-scaling
+                vLocalPos = position;
+                
+                // Organic vertex animation - subtle pulsing for living fire feel
                 vec3 pos = position;
-                // Use uniform wave frequency to prevent oval distortion
-                float waveFreq = 4.0;
-                float wave1 = sin(pos.x * waveFreq + uTime * uWaveSpeed) * uWaveAmplitude;
-                float wave2 = cos(pos.y * waveFreq + uTime * uWaveSpeed * 1.1) * uWaveAmplitude;
-                float wave3 = sin((pos.x + pos.y) * waveFreq * 0.7 + uTime * uWaveSpeed * 0.9) * uWaveAmplitude;
-                // Apply wave as UV-based radial displacement instead of normal-based
-                vec2 center = uv - 0.5;
-                float radialDist = length(center);
-                float radialWave = (wave1 + wave2 + wave3) * 0.3 * (1.0 - radialDist);
-                pos.z += radialWave;
+                float pulse = sin(uTime * uWaveSpeed * 0.5) * 0.02 + 1.0;
+                
+                // Subtle surface wave for organic motion (not UV-tiled noise)
+                float wave = sin(position.x * 3.0 + uTime * uWaveSpeed) * 
+                            cos(position.y * 2.5 + uTime * uWaveSpeed * 0.8) * 
+                            sin(position.z * 2.8 + uTime * uWaveSpeed * 0.6);
+                pos += normalize(position) * wave * uWaveAmplitude * pulse;
+                
+                vNormal = normalize(normalMatrix * normal);
+                vWorldNormal = normalize((modelMatrix * vec4(normal, 0.0)).xyz);
+                vec4 worldPos = modelMatrix * vec4(pos, 1.0);
+                vViewDir = normalize(cameraPosition - worldPos.xyz);
+                
                 gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
             }
         `,
@@ -5065,9 +5084,15 @@ function createFireballCoreMaterial(texture, cols, rows, totalFrames) {
             uniform float uEmission;
             uniform float uRimPower;
             uniform float uRimIntensity;
+            uniform vec3 uColorHot;
+            uniform vec3 uColorMid;
+            uniform vec3 uColorCool;
+            
             varying vec2 vUv;
             varying vec3 vNormal;
+            varying vec3 vWorldNormal;
             varying vec3 vViewDir;
+            varying vec3 vLocalPos;
 
             vec4 sampleFrame(float frameIndex) {
                 float frame = mod(frameIndex, uTotalFrames);
@@ -5078,31 +5103,73 @@ function createFireballCoreMaterial(texture, cols, rows, totalFrames) {
                 vec2 frameUV = frameOffset + vUv * frameSize;
                 return texture2D(uTexture, frameUV);
             }
+            
+            // 1D gradient ramp for Lambert lighting (Valorant-style)
+            vec3 gradientLambert(float NdotL) {
+                // Remap NdotL from [-1,1] to [0,1] for gradient lookup
+                float t = NdotL * 0.5 + 0.5;
+                t = clamp(t, 0.0, 1.0);
+                
+                // Three-color gradient: hot center -> mid -> cool edge
+                vec3 color;
+                if (t > 0.6) {
+                    color = mix(uColorMid, uColorHot, (t - 0.6) / 0.4);
+                } else if (t > 0.3) {
+                    color = mix(uColorCool, uColorMid, (t - 0.3) / 0.3);
+                } else {
+                    color = uColorCool * (t / 0.3 * 0.5 + 0.5);
+                }
+                return color;
+            }
 
             void main() {
+                // Sample flipbook for alpha/detail only
                 float currentFrame = floor(uTime);
                 float nextFrame = currentFrame + 1.0;
                 float blendFactor = fract(uTime);
                 vec4 color1 = sampleFrame(currentFrame);
                 vec4 color2 = sampleFrame(nextFrame);
-                vec4 blendedColor = mix(color1, color2, blendFactor);
-                float rim = pow(1.0 - max(dot(vNormal, vViewDir), 0.0), uRimPower);
-                float rimBoost = rim * uRimIntensity;
-                vec2 center = vUv - 0.5;
-                float dist = length(center) * 2.0;
-                float edgeFade = 1.0 - smoothstep(0.6, 1.0, dist);
-                vec3 finalColor = blendedColor.rgb * uEmission * (1.0 + rimBoost);
-                float alpha = blendedColor.a * uOpacity * edgeFade;
+                vec4 texColor = mix(color1, color2, blendFactor);
+                
+                // Gradient Lambert lighting based on view direction
+                float NdotV = dot(vNormal, vViewDir);
+                vec3 gradientColor = gradientLambert(NdotV);
+                
+                // Fresnel rim lighting for edge glow
+                float fresnel = pow(1.0 - max(NdotV, 0.0), uRimPower);
+                float rimGlow = fresnel * uRimIntensity;
+                
+                // SOLID core - brightest at center
+                float radialDist = length(vLocalPos) * 2.0;
+                float coreSolid = 1.0 - smoothstep(0.0, 1.0, radialDist * 0.8);
+                coreSolid = max(coreSolid, 0.3);
+                
+                // FORCE ORANGE/RED: Use gradient colors ONLY, ignore texture color completely
+                // This guarantees the fireball will be orange/red regardless of texture
+                vec3 baseColor = gradientColor;
+                
+                // Add orange rim glow
+                vec3 rimColor = uColorMid * rimGlow * 1.5;
+                
+                // Final color - moderate emission to prevent white blowout
+                vec3 finalColor = (baseColor + rimColor) * min(uEmission, 2.0);
+                
+                // Alpha from texture for shape, but ensure solid core
+                float alpha = max(texColor.a, 0.8) * uOpacity * (coreSolid + rimGlow * 0.3);
+                alpha = clamp(alpha, 0.0, 1.0);
+                
                 gl_FragColor = vec4(finalColor, alpha);
             }
         `,
         transparent: true,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
-        side: THREE.DoubleSide
+        side: THREE.FrontSide
     });
 }
 
+// MEDIUM layer: Shell material for volumetric depth (works with SphereGeometry)
+// Must NOT dominate silhouette - supports the core, adds depth
 function createInnerFlameMaterial(texture, cols, rows, totalFrames) {
     const config = FIREBALL_VFX_CONFIG.projectile;
     return new THREE.ShaderMaterial({
@@ -5115,15 +5182,30 @@ function createInnerFlameMaterial(texture, cols, rows, totalFrames) {
             uOpacity: { value: config.innerFlameOpacity },
             uScale: { value: 1.0 },
             uEmission: { value: 1.2 },
-            uRandomZRotation: { value: Math.random() * Math.PI * 2 }
+            uColorWarm: { value: new THREE.Color(1.0, 0.5, 0.1) },
+            uColorCool: { value: new THREE.Color(0.8, 0.15, 0.05) }
         },
         vertexShader: `
-            uniform float uScale;
+            uniform float uTime;
             varying vec2 vUv;
+            varying vec3 vNormal;
+            varying vec3 vViewDir;
+            varying vec3 vLocalPos;
+            
             void main() {
                 vUv = uv;
-                // DO NOT scale here - scaling is done via mesh.scale.setScalar() to prevent double-scaling
-                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                vLocalPos = position;
+                vNormal = normalize(normalMatrix * normal);
+                vec4 worldPos = modelMatrix * vec4(position, 1.0);
+                vViewDir = normalize(cameraPosition - worldPos.xyz);
+                
+                // Subtle organic motion
+                vec3 pos = position;
+                float wave = sin(position.x * 2.0 + uTime * 2.0) * 
+                            cos(position.y * 2.5 + uTime * 1.8) * 0.02;
+                pos += normalize(position) * wave;
+                
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
             }
         `,
         fragmentShader: `
@@ -5134,7 +5216,13 @@ function createInnerFlameMaterial(texture, cols, rows, totalFrames) {
             uniform float uTotalFrames;
             uniform float uOpacity;
             uniform float uEmission;
+            uniform vec3 uColorWarm;
+            uniform vec3 uColorCool;
+            
             varying vec2 vUv;
+            varying vec3 vNormal;
+            varying vec3 vViewDir;
+            varying vec3 vLocalPos;
 
             vec4 sampleFrame(float frameIndex) {
                 float frame = mod(frameIndex, uTotalFrames);
@@ -5152,19 +5240,28 @@ function createInnerFlameMaterial(texture, cols, rows, totalFrames) {
                 float blendFactor = fract(uTime);
                 vec4 color1 = sampleFrame(currentFrame);
                 vec4 color2 = sampleFrame(nextFrame);
-                vec4 blendedColor = mix(color1, color2, blendFactor);
-                vec2 center = vUv - 0.5;
-                float dist = length(center) * 2.0;
-                float edgeFade = 1.0 - smoothstep(0.7, 1.0, dist);
-                vec3 finalColor = blendedColor.rgb * uEmission;
-                float alpha = blendedColor.a * uOpacity * edgeFade;
-                gl_FragColor = vec4(finalColor, alpha);
+                vec4 texColor = mix(color1, color2, blendFactor);
+                
+                // Fresnel for edge glow (shell should be more visible at edges)
+                float NdotV = max(dot(vNormal, vViewDir), 0.0);
+                float fresnel = pow(1.0 - NdotV, 2.5);
+                
+                // FORCE ORANGE/RED: Use gradient colors ONLY, ignore texture color
+                vec3 flameColor = mix(uColorCool, uColorWarm, fresnel);
+                
+                // Use gradient colors only - moderate emission to prevent blowout
+                vec3 finalColor = flameColor * min(uEmission, 1.5);
+                
+                // Alpha: shell is more transparent in center, visible at edges
+                float shellAlpha = max(texColor.a, 0.5) * uOpacity * (0.3 + fresnel * 0.7);
+                
+                gl_FragColor = vec4(finalColor, shellAlpha);
             }
         `,
         transparent: true,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
-        side: THREE.DoubleSide
+        side: THREE.BackSide  // Render inside of sphere for shell effect
     });
 }
 
@@ -5326,7 +5423,7 @@ function createFlipbookMaterial(texture, cols, rows, totalFrames) {
     });
 }
 
-// Create fireball projectile for 5x weapon (Valorant-style BMS: Core flipbook + Inner flame + Flame particles)
+// Create fireball projectile for 5x weapon (Valorant-style BMS: Core sphere + Shell particles + Micro sparks)
 function createFireballProjectile(position, direction, weaponKey) {
     if (!fireballVFXState.texturesLoaded || weaponKey !== '5x') return null;
 
@@ -5337,26 +5434,33 @@ function createFireballProjectile(position, direction, weaponKey) {
     const fireballGroup = new THREE.Group();
     fireballGroup.position.copy(position);
 
-    const coreGeometry = new THREE.PlaneGeometry(projectileConfig.coreSize, projectileConfig.coreSize);
-    const coreMaterial = createFireballCoreMaterial(
-        fireballVFXState.textures.fireballCore,
-        flipbookConfig.fireballCoreCols,
-        flipbookConfig.fireballCoreRows,
-        flipbookConfig.fireballCoreFrames
-    );
+    // BIG layer: Core sphere - SOLID ORANGE using simple material for guaranteed color
+    const coreRadius = projectileConfig.coreSize * 0.5;
+    const coreGeometry = new THREE.IcosahedronGeometry(coreRadius, 3);
+    // Use MeshBasicMaterial with NormalBlending for GUARANTEED visible orange color
+    const coreMaterial = new THREE.MeshBasicMaterial({
+        color: 0xff4400,  // Bright orange-red
+        transparent: true,
+        opacity: 0.9,
+        blending: THREE.NormalBlending,  // NormalBlending to prevent white blowout
+        depthWrite: false
+    });
     const coreMesh = new THREE.Mesh(coreGeometry, coreMaterial);
-    coreMesh.userData.randomZRotation = Math.random() * Math.PI * 2;
     fireballGroup.add(coreMesh);
 
-    const innerFlameGeometry = new THREE.PlaneGeometry(projectileConfig.innerFlameSize, projectileConfig.innerFlameSize);
-    const innerFlameMaterial = createInnerFlameMaterial(
-        fireballVFXState.textures.innerFlame,
-        flipbookConfig.innerFlameCols,
-        flipbookConfig.innerFlameRows,
-        flipbookConfig.innerFlameFrames
-    );
+    // MEDIUM layer: Inner flame shell - SOLID RED-ORANGE (outer glow)
+    const innerFlameRadius = projectileConfig.innerFlameSize * 0.5;
+    const innerFlameGeometry = new THREE.IcosahedronGeometry(innerFlameRadius, 2);
+    // Use MeshBasicMaterial with NormalBlending for visible red-orange shell
+    const innerFlameMaterial = new THREE.MeshBasicMaterial({
+        color: 0xff2200,  // Red-orange
+        transparent: true,
+        opacity: 0.5,
+        blending: THREE.NormalBlending,  // NormalBlending to prevent white blowout
+        depthWrite: false,
+        side: THREE.BackSide  // Render inside for shell effect
+    });
     const innerFlameMesh = new THREE.Mesh(innerFlameGeometry, innerFlameMaterial);
-    innerFlameMesh.userData.randomZRotation = Math.random() * Math.PI * 2;
     fireballGroup.add(innerFlameMesh);
 
     // Trail ribbon
@@ -5589,40 +5693,161 @@ function spawnFlameParticles(fireball) {
     }
 }
 
-// Create impact effect with multi-layer explosion (Core flipbook + Debris particles)
+// Create 3-layer explosion: Core flash + Energy ring + Flame puffs
+// Short lifetime (< 0.4s), smooth expansion, no noisy alpha edges
 function createFireballImpact(position, direction) {
     if (!fireballVFXState.texturesLoaded) return;
 
     const config = FIREBALL_VFX_CONFIG.impact;
     const flipbookConfig = FIREBALL_VFX_CONFIG.flipbook;
 
-    const impactGeometry = new THREE.PlaneGeometry(config.coreSize, config.coreSize);
-    const impactMaterial = createFrameBlendedFlipbookMaterial(
-        fireballVFXState.textures.explosionCore,
-        flipbookConfig.explosionCoreCols,
-        flipbookConfig.explosionCoreRows,
-        flipbookConfig.explosionCoreFrames
-    );
-    impactMaterial.uniforms.uEmission.value = 2.5;
+    // LAYER 1: Core flash (bright center, quick fade)
+    const coreGeometry = new THREE.SphereGeometry(config.coreSize * 0.3, 16, 16);
+    const coreMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+            uTime: { value: 0 },
+            uOpacity: { value: 1.0 },
+            uEmission: { value: 4.0 },
+            uColorHot: { value: new THREE.Color(1.0, 1.0, 0.9) },
+            uColorMid: { value: new THREE.Color(1.0, 0.7, 0.2) }
+        },
+        vertexShader: `
+            varying vec3 vNormal;
+            varying vec3 vViewDir;
+            void main() {
+                vNormal = normalize(normalMatrix * normal);
+                vec4 worldPos = modelMatrix * vec4(position, 1.0);
+                vViewDir = normalize(cameraPosition - worldPos.xyz);
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform float uTime;
+            uniform float uOpacity;
+            uniform float uEmission;
+            uniform vec3 uColorHot;
+            uniform vec3 uColorMid;
+            varying vec3 vNormal;
+            varying vec3 vViewDir;
+            void main() {
+                float NdotV = max(dot(vNormal, vViewDir), 0.0);
+                vec3 color = mix(uColorMid, uColorHot, NdotV);
+                float alpha = uOpacity * (0.8 + NdotV * 0.2);
+                gl_FragColor = vec4(color * uEmission, alpha);
+            }
+        `,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+    });
+    const coreMesh = new THREE.Mesh(coreGeometry, coreMaterial);
+    coreMesh.position.copy(position);
 
-    const impactMesh = new THREE.Mesh(impactGeometry, impactMaterial);
-    impactMesh.position.copy(position);
-    impactMesh.userData.randomZRotation = Math.random() * Math.PI * 2;
+    // LAYER 2: Energy ring (expanding outward)
+    const ringGeometry = new THREE.RingGeometry(config.ringSize * 0.3, config.ringSize * 0.5, 32);
+    const ringMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+            uTime: { value: 0 },
+            uOpacity: { value: 0.8 },
+            uColor: { value: new THREE.Color(1.0, 0.5, 0.1) }
+        },
+        vertexShader: `
+            varying vec2 vUv;
+            void main() {
+                vUv = uv;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform float uTime;
+            uniform float uOpacity;
+            uniform vec3 uColor;
+            varying vec2 vUv;
+            void main() {
+                float alpha = uOpacity * smoothstep(0.0, 0.3, vUv.x) * smoothstep(1.0, 0.7, vUv.x);
+                gl_FragColor = vec4(uColor * 2.5, alpha);
+            }
+        `,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide
+    });
+    const ringMesh = new THREE.Mesh(ringGeometry, ringMaterial);
+    ringMesh.position.copy(position);
+    ringMesh.rotation.x = -Math.PI / 2; // Horizontal ring
+
+    // LAYER 3: Flame puffs (expanding spheres)
+    const puffs = [];
+    for (let i = 0; i < config.puffCount; i++) {
+        const angle = (i / config.puffCount) * Math.PI * 2;
+        const puffGeometry = new THREE.SphereGeometry(config.puffSize * 0.3, 8, 8);
+        const puffMaterial = new THREE.ShaderMaterial({
+            uniforms: {
+                uTime: { value: 0 },
+                uOpacity: { value: 0.6 },
+                uEmission: { value: 2.0 },
+                uColor: { value: new THREE.Color(1.0, 0.4, 0.1) }
+            },
+            vertexShader: `
+                varying vec3 vNormal;
+                void main() {
+                    vNormal = normalize(normalMatrix * normal);
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+            fragmentShader: `
+                uniform float uOpacity;
+                uniform float uEmission;
+                uniform vec3 uColor;
+                varying vec3 vNormal;
+                void main() {
+                    float rim = 1.0 - abs(dot(vNormal, vec3(0.0, 0.0, 1.0)));
+                    vec3 color = uColor * uEmission * (0.5 + rim * 0.5);
+                    gl_FragColor = vec4(color, uOpacity * (0.3 + rim * 0.7));
+                }
+            `,
+            transparent: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
+        });
+        const puffMesh = new THREE.Mesh(puffGeometry, puffMaterial);
+        puffMesh.position.copy(position);
+        
+        const velocity = new THREE.Vector3(
+            Math.cos(angle) * config.puffSpeed,
+            Math.random() * config.puffSpeed * 0.3,
+            Math.sin(angle) * config.puffSpeed
+        );
+        
+        puffs.push({
+            mesh: puffMesh,
+            material: puffMaterial,
+            velocity: velocity,
+            lifetime: config.puffLifetime
+        });
+        scene.add(puffMesh);
+    }
 
     const impact = {
-        mesh: impactMesh,
-        material: impactMaterial,
+        // Layer 1: Core flash
+        coreMesh: coreMesh,
+        coreMaterial: coreMaterial,
+        // Layer 2: Energy ring
+        ringMesh: ringMesh,
+        ringMaterial: ringMaterial,
+        // Layer 3: Flame puffs
+        puffs: puffs,
         position: position.clone(),
         lifetime: config.duration,
         maxLifetime: config.duration,
         elapsedTime: 0,
-        animationTime: 0,
-        initialScale: 1.0,
         debrisParticles: [],
         active: true
     };
 
-    scene.add(impactMesh);
+    scene.add(coreMesh);
+    scene.add(ringMesh);
     fireballVFXState.activeImpacts.push(impact);
 
     spawnDebrisParticles(impact, position);
@@ -5732,29 +5957,34 @@ function updateFireballVFX(deltaTime) {
         // Clamp scale to avoid oval stretching (max 1.25)
         const safeScale = Math.min(curveScale, 1.25);
 
-        const coreEasedTime = Math.pow(fireball.elapsedTime * config.projectile.coreSpeed, 0.55);
-        fireball.coreTime = coreEasedTime * flipbookConfig.fireballCoreFrames;
-        fireball.coreMaterial.uniforms.uTime.value = fireball.coreTime;
-        fireball.coreMaterial.uniforms.uOpacity.value = curveAlpha;
-        fireball.coreMaterial.uniforms.uScale.value = safeScale;
-
-        const innerEasedTime = Math.pow(fireball.elapsedTime * config.projectile.innerFlameSpeed, 0.55);
-        fireball.innerFlameTime = innerEasedTime * flipbookConfig.innerFlameFrames;
-        fireball.innerFlameMaterial.uniforms.uTime.value = fireball.innerFlameTime;
-        fireball.innerFlameMaterial.uniforms.uOpacity.value = curveAlpha * config.projectile.innerFlameOpacity;
-        fireball.innerFlameMaterial.uniforms.uScale.value = safeScale * 0.9;
-        fireball.innerFlameMaterial.uniforms.uEmission.value = curveEmission * 1.2;
-
-        if (camera) {
-            fireball.coreMesh.lookAt(camera.position);
-            fireball.coreMesh.rotateZ(fireball.coreMesh.userData.randomZRotation);
-            // Apply uniform scaling to prevent Z-axis stretching
-            fireball.coreMesh.scale.setScalar(fireball.coreMaterial.uniforms.uScale.value);
-            fireball.innerFlameMesh.lookAt(camera.position);
-            fireball.innerFlameMesh.rotateZ(fireball.innerFlameMesh.userData.randomZRotation);
-            // Apply uniform scaling to prevent Z-axis stretching
-            fireball.innerFlameMesh.scale.setScalar(fireball.innerFlameMaterial.uniforms.uScale.value);
+        // Update materials - handle both ShaderMaterial (with uniforms) and MeshBasicMaterial (without uniforms)
+        if (fireball.coreMaterial.uniforms) {
+            const coreEasedTime = Math.pow(fireball.elapsedTime * config.projectile.coreSpeed, 0.55);
+            fireball.coreTime = coreEasedTime * flipbookConfig.fireballCoreFrames;
+            fireball.coreMaterial.uniforms.uTime.value = fireball.coreTime;
+            fireball.coreMaterial.uniforms.uOpacity.value = curveAlpha;
+            fireball.coreMaterial.uniforms.uScale.value = safeScale;
+        } else {
+            // MeshBasicMaterial - update opacity directly
+            fireball.coreMaterial.opacity = curveAlpha;
         }
+
+        if (fireball.innerFlameMaterial.uniforms) {
+            const innerEasedTime = Math.pow(fireball.elapsedTime * config.projectile.innerFlameSpeed, 0.55);
+            fireball.innerFlameTime = innerEasedTime * flipbookConfig.innerFlameFrames;
+            fireball.innerFlameMaterial.uniforms.uTime.value = fireball.innerFlameTime;
+            fireball.innerFlameMaterial.uniforms.uOpacity.value = curveAlpha * config.projectile.innerFlameOpacity;
+            fireball.innerFlameMaterial.uniforms.uScale.value = safeScale * 0.9;
+            fireball.innerFlameMaterial.uniforms.uEmission.value = curveEmission * 1.2;
+        } else {
+            // MeshBasicMaterial - update opacity directly
+            fireball.innerFlameMaterial.opacity = curveAlpha * config.projectile.innerFlameOpacity;
+        }
+
+        // SphereGeometry doesn't need lookAt - it's volumetric from all angles
+        // Just apply uniform scaling for the BMS hierarchy
+        fireball.coreMesh.scale.setScalar(safeScale);
+        fireball.innerFlameMesh.scale.setScalar(safeScale * 0.9);
 
         updateFireballTrail(fireball, deltaTime);
 
@@ -5767,7 +5997,7 @@ function updateFireballVFX(deltaTime) {
         fireball.trailMaterial.uniforms.uTime.value += deltaTime;
     }
 
-    // Update active impacts with frame-blended 64f flipbook animation
+    // Update active impacts - 3-layer explosion (core flash + energy ring + flame puffs)
     for (let i = fireballVFXState.activeImpacts.length - 1; i >= 0; i--) {
         const impact = fireballVFXState.activeImpacts[i];
         if (!impact.active) continue;
@@ -5777,27 +6007,57 @@ function updateFireballVFX(deltaTime) {
         const lifeProgress = Math.min(1, impact.elapsedTime / impact.maxLifetime);
 
         if (impact.lifetime <= 0) {
-            scene.remove(impact.mesh);
-            impact.mesh.geometry.dispose();
-            impact.material.dispose();
+            // Clean up Layer 1: Core flash
+            if (impact.coreMesh) {
+                scene.remove(impact.coreMesh);
+                impact.coreMesh.geometry.dispose();
+                impact.coreMaterial.dispose();
+            }
+            // Clean up Layer 2: Energy ring
+            if (impact.ringMesh) {
+                scene.remove(impact.ringMesh);
+                impact.ringMesh.geometry.dispose();
+                impact.ringMaterial.dispose();
+            }
+            // Clean up Layer 3: Flame puffs
+            if (impact.puffs) {
+                for (const puff of impact.puffs) {
+                    scene.remove(puff.mesh);
+                    puff.mesh.geometry.dispose();
+                    puff.material.dispose();
+                }
+            }
             fireballVFXState.activeImpacts.splice(i, 1);
             continue;
         }
 
-        const curveScale = evaluateVFXCurve(config.curves.scale, lifeProgress);
-        const curveAlpha = evaluateVFXCurve(config.curves.alpha, lifeProgress);
-        const curveEmission = evaluateVFXCurve(config.curves.emission, lifeProgress);
+        // Smooth expansion curve (ease out)
+        const expansionCurve = 1.0 - Math.pow(1.0 - lifeProgress, 2.0);
+        const fadeOut = 1.0 - lifeProgress;
 
-        const easedTime = Math.pow(impact.elapsedTime / impact.maxLifetime, 0.55);
-        impact.animationTime = easedTime * flipbookConfig.explosionCoreFrames;
-        impact.material.uniforms.uTime.value = impact.animationTime;
-        impact.material.uniforms.uScale.value = curveScale * config.impact.scaleUp;
-        impact.material.uniforms.uOpacity.value = curveAlpha;
-        impact.material.uniforms.uEmission.value = curveEmission;
+        // Layer 1: Core flash - quick bright flash that fades
+        if (impact.coreMesh && impact.coreMaterial) {
+            const coreScale = 1.0 + expansionCurve * (config.impact.scaleUp - 1.0);
+            impact.coreMesh.scale.setScalar(coreScale);
+            impact.coreMaterial.uniforms.uOpacity.value = fadeOut * fadeOut; // Quick fade
+            impact.coreMaterial.uniforms.uEmission.value = 4.0 * fadeOut;
+        }
 
-        if (camera) {
-            impact.mesh.lookAt(camera.position);
-            impact.mesh.rotateZ(impact.mesh.userData.randomZRotation);
+        // Layer 2: Energy ring - expands outward
+        if (impact.ringMesh && impact.ringMaterial) {
+            const ringScale = 0.5 + expansionCurve * 2.5;
+            impact.ringMesh.scale.setScalar(ringScale);
+            impact.ringMaterial.uniforms.uOpacity.value = fadeOut * 0.8;
+        }
+
+        // Layer 3: Flame puffs - move outward and fade
+        if (impact.puffs) {
+            for (const puff of impact.puffs) {
+                puff.mesh.position.add(puff.velocity.clone().multiplyScalar(deltaTime));
+                const puffScale = 1.0 + expansionCurve * 0.5;
+                puff.mesh.scale.setScalar(puffScale);
+                puff.material.uniforms.uOpacity.value = fadeOut * 0.6;
+            }
         }
     }
 
