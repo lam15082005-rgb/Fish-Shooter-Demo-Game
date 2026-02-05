@@ -5040,11 +5040,18 @@ function createFireballCoreMaterial(texture, cols, rows, totalFrames) {
                 vNormal = normalize(normalMatrix * normal);
                 vec4 worldPos = modelMatrix * vec4(position, 1.0);
                 vViewDir = normalize(cameraPosition - worldPos.xyz);
-                vec3 pos = position * uScale;
-                float wave1 = sin(pos.x * 4.0 + uTime * uWaveSpeed) * uWaveAmplitude;
-                float wave2 = cos(pos.y * 3.5 + uTime * uWaveSpeed * 1.2) * uWaveAmplitude * 0.8;
-                float wave3 = sin(pos.z * 5.0 + uTime * uWaveSpeed * 0.9) * uWaveAmplitude * 0.6;
-                pos += normal * (wave1 + wave2 + wave3) * 0.6;
+                // DO NOT scale here - scaling is done via mesh.scale.setScalar() to prevent double-scaling
+                vec3 pos = position;
+                // Use uniform wave frequency to prevent oval distortion
+                float waveFreq = 4.0;
+                float wave1 = sin(pos.x * waveFreq + uTime * uWaveSpeed) * uWaveAmplitude;
+                float wave2 = cos(pos.y * waveFreq + uTime * uWaveSpeed * 1.1) * uWaveAmplitude;
+                float wave3 = sin((pos.x + pos.y) * waveFreq * 0.7 + uTime * uWaveSpeed * 0.9) * uWaveAmplitude;
+                // Apply wave as UV-based radial displacement instead of normal-based
+                vec2 center = uv - 0.5;
+                float radialDist = length(center);
+                float radialWave = (wave1 + wave2 + wave3) * 0.3 * (1.0 - radialDist);
+                pos.z += radialWave;
                 gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
             }
         `,
@@ -5115,8 +5122,8 @@ function createInnerFlameMaterial(texture, cols, rows, totalFrames) {
             varying vec2 vUv;
             void main() {
                 vUv = uv;
-                vec3 pos = position * uScale;
-                gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+                // DO NOT scale here - scaling is done via mesh.scale.setScalar() to prevent double-scaling
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
             }
         `,
         fragmentShader: `
