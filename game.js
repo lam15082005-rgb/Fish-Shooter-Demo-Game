@@ -6252,14 +6252,42 @@ function updateFireballVFX(deltaTime) {
             fireball.glowMaterial.uniforms.uOpacity.value = curveAlpha * 0.3;
         }
 
-        // Billboard all layers to face camera
+        // Billboard all layers to face camera, then rotate to align with travel direction
         if (camera) {
+            // First billboard to camera
             fireball.coreMesh.lookAt(camera.position);
             if (fireball.shellMesh) fireball.shellMesh.lookAt(camera.position);
             if (fireball.glowMesh) fireball.glowMesh.lookAt(camera.position);
+            
+            // Calculate rotation to align fireball "head" with travel direction
+            // Project travel direction onto camera's view plane
+            const cameraDir = new THREE.Vector3();
+            camera.getWorldDirection(cameraDir);
+            const cameraRight = new THREE.Vector3();
+            cameraRight.crossVectors(cameraDir, camera.up).normalize();
+            const cameraUp = new THREE.Vector3();
+            cameraUp.crossVectors(cameraRight, cameraDir).normalize();
+            
+            // Project fireball direction onto screen plane
+            const travelDir = fireball.direction.clone();
+            const screenX = travelDir.dot(cameraRight);
+            const screenY = travelDir.dot(cameraUp);
+            
+            // Calculate angle from screen-space direction
+            // The sprite's "head" points to the right (+X in UV space), so we need to rotate
+            // to align with the travel direction projected onto the screen
+            const angle = Math.atan2(screenY, screenX);
+            
+            // Apply Z rotation (around the view axis) to align head with travel direction
+            // Subtract PI/2 because the fireball sprite head points right, but atan2(0,1)=0
+            fireball.coreMesh.rotateZ(-angle + Math.PI / 2);
+            if (fireball.shellMesh) fireball.shellMesh.rotateZ(-angle + Math.PI / 2);
+            // Glow doesn't need rotation (it's radially symmetric)
+            
             if (fireball.microParticles) {
                 for (const particle of fireball.microParticles) {
                     particle.mesh.lookAt(camera.position);
+                    particle.mesh.rotateZ(-angle + Math.PI / 2);
                 }
             }
         }
