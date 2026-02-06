@@ -4634,6 +4634,9 @@ const FIREBALL_VFX_CONFIG = {
     enabled: true,
     assetPath: 'assets/',
     textures: {
+        // Primary realistic fireball sprite sheet (28 frames from Cethiel's CC0 fireball effect)
+        realisticFireball: 'fireball_spritesheet.png',
+        // Legacy textures (kept for fallback/secondary layers)
         fireballCore: 'fireball_core.png',
         innerFlame: 'inner_flame_flipbook.png',
         flameParticle: 'flame_particle.png',
@@ -4643,6 +4646,11 @@ const FIREBALL_VFX_CONFIG = {
         spark: 'vfx/spark.png'
     },
     flipbook: {
+        // Realistic fireball sprite sheet (7 cols x 4 rows = 28 frames)
+        realisticFireballFrames: 28,
+        realisticFireballCols: 7,
+        realisticFireballRows: 4,
+        // Legacy flipbook settings
         fireballCoreFrames: 40,
         fireballCoreCols: 8,
         fireballCoreRows: 5,
@@ -4864,6 +4872,7 @@ async function loadFireballVFXTextures() {
     };
 
     await Promise.all([
+        loadFlipbookTexture('realisticFireball'),
         loadFlipbookTexture('fireballCore'),
         loadFlipbookTexture('innerFlame'),
         loadFlipbookTexture('flameParticle'),
@@ -5434,34 +5443,270 @@ function createFireballProjectile(position, direction, weaponKey) {
     const fireballGroup = new THREE.Group();
     fireballGroup.position.copy(position);
 
-    // BIG layer: Core sphere - SOLID ORANGE using simple material for guaranteed color
-    const coreRadius = projectileConfig.coreSize * 0.5;
-    const coreGeometry = new THREE.IcosahedronGeometry(coreRadius, 3);
-    // Use MeshBasicMaterial with NormalBlending for GUARANTEED visible orange color
-    const coreMaterial = new THREE.MeshBasicMaterial({
-        color: 0xff4400,  // Bright orange-red
+    // ========== LAYER 1 (BIG): Core Energy - Realistic Fireball Flipbook ==========
+    // Uses the authored 28-frame fireball animation from Cethiel's CC0 effect
+    const coreSize = projectileConfig.coreSize;
+    const coreGeometry = new THREE.PlaneGeometry(coreSize, coreSize * 0.575); // Match aspect ratio 188:108
+    const coreMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+            uTexture: { value: fireballVFXState.textures.realisticFireball },
+            uTime: { value: 0 },
+            uCols: { value: flipbookConfig.realisticFireballCols },
+            uRows: { value: flipbookConfig.realisticFireballRows },
+            uTotalFrames: { value: flipbookConfig.realisticFireballFrames },
+            uOpacity: { value: 1.0 },
+            uEmission: { value: 2.5 }
+        },
+        vertexShader: `
+            varying vec2 vUv;
+            void main() {
+                vUv = uv;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform sampler2D uTexture;
+            uniform float uTime;
+            uniform float uCols;
+            uniform float uRows;
+            uniform float uTotalFrames;
+            uniform float uOpacity;
+            uniform float uEmission;
+            varying vec2 vUv;
+
+            vec4 sampleFrame(float frameIndex) {
+                float frame = mod(frameIndex, uTotalFrames);
+                float col = mod(frame, uCols);
+                float row = floor(frame / uCols);
+                vec2 frameSize = vec2(1.0 / uCols, 1.0 / uRows);
+                vec2 frameOffset = vec2(col * frameSize.x, 1.0 - (row + 1.0) * frameSize.y);
+                vec2 frameUV = frameOffset + vUv * frameSize;
+                return texture2D(uTexture, frameUV);
+            }
+
+            void main() {
+                float currentFrame = floor(uTime);
+                float nextFrame = currentFrame + 1.0;
+                float blendFactor = fract(uTime);
+                vec4 color1 = sampleFrame(currentFrame);
+                vec4 color2 = sampleFrame(nextFrame);
+                vec4 texColor = mix(color1, color2, blendFactor);
+                
+                // Apply emission for bloom
+                vec3 finalColor = texColor.rgb * uEmission;
+                float alpha = texColor.a * uOpacity;
+                
+                gl_FragColor = vec4(finalColor, alpha);
+            }
+        `,
         transparent: true,
-        opacity: 0.9,
-        blending: THREE.NormalBlending,  // NormalBlending to prevent white blowout
-        depthWrite: false
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide
     });
     const coreMesh = new THREE.Mesh(coreGeometry, coreMaterial);
     fireballGroup.add(coreMesh);
 
-    // MEDIUM layer: Inner flame shell - SOLID RED-ORANGE (outer glow)
-    const innerFlameRadius = projectileConfig.innerFlameSize * 0.5;
-    const innerFlameGeometry = new THREE.IcosahedronGeometry(innerFlameRadius, 2);
-    // Use MeshBasicMaterial with NormalBlending for visible red-orange shell
-    const innerFlameMaterial = new THREE.MeshBasicMaterial({
-        color: 0xff2200,  // Red-orange
+    // ========== LAYER 2 (MEDIUM): Flame Shell - Outer distortion layer ==========
+    // Slightly larger, lower opacity, creates depth illusion
+    const shellSize = projectileConfig.innerFlameSize;
+    const shellGeometry = new THREE.PlaneGeometry(shellSize, shellSize * 0.575);
+    const shellMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+            uTexture: { value: fireballVFXState.textures.realisticFireball },
+            uTime: { value: 0 },
+            uCols: { value: flipbookConfig.realisticFireballCols },
+            uRows: { value: flipbookConfig.realisticFireballRows },
+            uTotalFrames: { value: flipbookConfig.realisticFireballFrames },
+            uOpacity: { value: 0.6 },
+            uEmission: { value: 1.8 },
+            uOffset: { value: 3.0 } // Frame offset for variation
+        },
+        vertexShader: `
+            varying vec2 vUv;
+            void main() {
+                vUv = uv;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform sampler2D uTexture;
+            uniform float uTime;
+            uniform float uCols;
+            uniform float uRows;
+            uniform float uTotalFrames;
+            uniform float uOpacity;
+            uniform float uEmission;
+            uniform float uOffset;
+            varying vec2 vUv;
+
+            vec4 sampleFrame(float frameIndex) {
+                float frame = mod(frameIndex, uTotalFrames);
+                float col = mod(frame, uCols);
+                float row = floor(frame / uCols);
+                vec2 frameSize = vec2(1.0 / uCols, 1.0 / uRows);
+                vec2 frameOffset = vec2(col * frameSize.x, 1.0 - (row + 1.0) * frameSize.y);
+                vec2 frameUV = frameOffset + vUv * frameSize;
+                return texture2D(uTexture, frameUV);
+            }
+
+            void main() {
+                // Offset frame for variation from core
+                float currentFrame = floor(uTime + uOffset);
+                float nextFrame = currentFrame + 1.0;
+                float blendFactor = fract(uTime + uOffset);
+                vec4 color1 = sampleFrame(currentFrame);
+                vec4 color2 = sampleFrame(nextFrame);
+                vec4 texColor = mix(color1, color2, blendFactor);
+                
+                // Edge fade for soft shell appearance
+                vec2 center = vUv - 0.5;
+                float dist = length(center) * 2.0;
+                float edgeFade = 1.0 - smoothstep(0.6, 1.0, dist);
+                
+                vec3 finalColor = texColor.rgb * uEmission;
+                float alpha = texColor.a * uOpacity * edgeFade;
+                
+                gl_FragColor = vec4(finalColor, alpha);
+            }
+        `,
         transparent: true,
-        opacity: 0.5,
-        blending: THREE.NormalBlending,  // NormalBlending to prevent white blowout
+        blending: THREE.AdditiveBlending,
         depthWrite: false,
-        side: THREE.BackSide  // Render inside for shell effect
+        side: THREE.DoubleSide
     });
-    const innerFlameMesh = new THREE.Mesh(innerFlameGeometry, innerFlameMaterial);
-    fireballGroup.add(innerFlameMesh);
+    const shellMesh = new THREE.Mesh(shellGeometry, shellMaterial);
+    shellMesh.position.z = -2; // Slightly behind core
+    fireballGroup.add(shellMesh);
+
+    // ========== LAYER 3 (SMALL): Micro Particles - Orbiting flame particles ==========
+    // Break spherical silhouette, add parallax depth
+    const microParticles = [];
+    const particleCount = 8;
+    const particleSize = 15;
+    for (let i = 0; i < particleCount; i++) {
+        const particleGeometry = new THREE.PlaneGeometry(particleSize, particleSize * 0.575);
+        const particleMaterial = new THREE.ShaderMaterial({
+            uniforms: {
+                uTexture: { value: fireballVFXState.textures.realisticFireball },
+                uTime: { value: 0 },
+                uCols: { value: flipbookConfig.realisticFireballCols },
+                uRows: { value: flipbookConfig.realisticFireballRows },
+                uTotalFrames: { value: flipbookConfig.realisticFireballFrames },
+                uOpacity: { value: 0.5 },
+                uEmission: { value: 1.5 },
+                uOffset: { value: i * 4.0 } // Different frame offset per particle
+            },
+            vertexShader: `
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+            fragmentShader: `
+                uniform sampler2D uTexture;
+                uniform float uTime;
+                uniform float uCols;
+                uniform float uRows;
+                uniform float uTotalFrames;
+                uniform float uOpacity;
+                uniform float uEmission;
+                uniform float uOffset;
+                varying vec2 vUv;
+
+                vec4 sampleFrame(float frameIndex) {
+                    float frame = mod(frameIndex, uTotalFrames);
+                    float col = mod(frame, uCols);
+                    float row = floor(frame / uCols);
+                    vec2 frameSize = vec2(1.0 / uCols, 1.0 / uRows);
+                    vec2 frameOffset = vec2(col * frameSize.x, 1.0 - (row + 1.0) * frameSize.y);
+                    vec2 frameUV = frameOffset + vUv * frameSize;
+                    return texture2D(uTexture, frameUV);
+                }
+
+                void main() {
+                    float currentFrame = floor(uTime + uOffset);
+                    float nextFrame = currentFrame + 1.0;
+                    float blendFactor = fract(uTime + uOffset);
+                    vec4 color1 = sampleFrame(currentFrame);
+                    vec4 color2 = sampleFrame(nextFrame);
+                    vec4 texColor = mix(color1, color2, blendFactor);
+                    
+                    vec3 finalColor = texColor.rgb * uEmission;
+                    float alpha = texColor.a * uOpacity;
+                    
+                    gl_FragColor = vec4(finalColor, alpha);
+                }
+            `,
+            transparent: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            side: THREE.DoubleSide
+        });
+        const particleMesh = new THREE.Mesh(particleGeometry, particleMaterial);
+        
+        // Position particles in orbit around core
+        const angle = (i / particleCount) * Math.PI * 2;
+        const orbitRadius = coreSize * 0.4;
+        particleMesh.position.x = Math.cos(angle) * orbitRadius;
+        particleMesh.position.y = Math.sin(angle) * orbitRadius * 0.5;
+        particleMesh.position.z = Math.sin(angle) * orbitRadius * 0.3;
+        
+        fireballGroup.add(particleMesh);
+        microParticles.push({
+            mesh: particleMesh,
+            material: particleMaterial,
+            angle: angle,
+            orbitRadius: orbitRadius,
+            orbitSpeed: 2.0 + Math.random() * 1.0
+        });
+    }
+
+    // ========== LAYER 4: Glow Layer - Emissive for bloom trigger ==========
+    const glowSize = coreSize * 1.5;
+    const glowGeometry = new THREE.PlaneGeometry(glowSize, glowSize);
+    const glowMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+            uColor: { value: new THREE.Color(0xff6600) },
+            uOpacity: { value: 0.3 },
+            uTime: { value: 0 }
+        },
+        vertexShader: `
+            varying vec2 vUv;
+            void main() {
+                vUv = uv;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform vec3 uColor;
+            uniform float uOpacity;
+            uniform float uTime;
+            varying vec2 vUv;
+
+            void main() {
+                vec2 center = vUv - 0.5;
+                float dist = length(center) * 2.0;
+                
+                // Soft radial gradient for glow
+                float glow = 1.0 - smoothstep(0.0, 1.0, dist);
+                glow = pow(glow, 2.0);
+                
+                // Subtle pulsing
+                float pulse = 0.9 + 0.1 * sin(uTime * 5.0);
+                
+                gl_FragColor = vec4(uColor * 2.0, glow * uOpacity * pulse);
+            }
+        `,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide
+    });
+    const glowMesh = new THREE.Mesh(glowGeometry, glowMaterial);
+    glowMesh.position.z = -5; // Behind everything
+    fireballGroup.add(glowMesh);
 
     // Trail ribbon
     const trailPoints = [];
@@ -5535,14 +5780,23 @@ function createFireballProjectile(position, direction, weaponKey) {
     const maxLifetime = 4;
     const fireball = {
         group: fireballGroup,
+        // Layer 1: Core (BIG)
         coreMesh: coreMesh,
         coreMaterial: coreMaterial,
-        innerFlameMesh: innerFlameMesh,
-        innerFlameMaterial: innerFlameMaterial,
+        // Layer 2: Shell (MEDIUM)
+        shellMesh: shellMesh,
+        shellMaterial: shellMaterial,
+        // Layer 3: Micro Particles (SMALL)
+        microParticles: microParticles,
+        // Layer 4: Glow
+        glowMesh: glowMesh,
+        glowMaterial: glowMaterial,
+        // Trail
         trailMesh: trailMesh,
         trailGeometry: trailGeometry,
         trailMaterial: trailMaterial,
         trailPoints: trailPoints,
+        // Movement
         velocity: direction.clone().normalize().multiplyScalar(CONFIG.weapons['5x'].speed),
         position: position.clone(),
         direction: direction.clone().normalize(),
@@ -5550,7 +5804,7 @@ function createFireballProjectile(position, direction, weaponKey) {
         maxLifetime: maxLifetime,
         elapsedTime: 0,
         coreTime: 0,
-        innerFlameTime: 0,
+        shellTime: 0,
         sparkTimer: 0,
         flameParticles: [],
         flameParticleTimer: 0,
@@ -5957,34 +6211,63 @@ function updateFireballVFX(deltaTime) {
         // Clamp scale to avoid oval stretching (max 1.25)
         const safeScale = Math.min(curveScale, 1.25);
 
-        // Update materials - handle both ShaderMaterial (with uniforms) and MeshBasicMaterial (without uniforms)
+        // ========== UPDATE LAYER 1: Core (BIG) - Realistic Fireball Flipbook ==========
         if (fireball.coreMaterial.uniforms) {
             const coreEasedTime = Math.pow(fireball.elapsedTime * config.projectile.coreSpeed, 0.55);
-            fireball.coreTime = coreEasedTime * flipbookConfig.fireballCoreFrames;
+            fireball.coreTime = coreEasedTime * flipbookConfig.realisticFireballFrames;
             fireball.coreMaterial.uniforms.uTime.value = fireball.coreTime;
             fireball.coreMaterial.uniforms.uOpacity.value = curveAlpha;
-            fireball.coreMaterial.uniforms.uScale.value = safeScale;
-        } else {
-            // MeshBasicMaterial - update opacity directly
-            fireball.coreMaterial.opacity = curveAlpha;
+            fireball.coreMaterial.uniforms.uEmission.value = curveEmission * 2.5;
         }
 
-        if (fireball.innerFlameMaterial.uniforms) {
-            const innerEasedTime = Math.pow(fireball.elapsedTime * config.projectile.innerFlameSpeed, 0.55);
-            fireball.innerFlameTime = innerEasedTime * flipbookConfig.innerFlameFrames;
-            fireball.innerFlameMaterial.uniforms.uTime.value = fireball.innerFlameTime;
-            fireball.innerFlameMaterial.uniforms.uOpacity.value = curveAlpha * config.projectile.innerFlameOpacity;
-            fireball.innerFlameMaterial.uniforms.uScale.value = safeScale * 0.9;
-            fireball.innerFlameMaterial.uniforms.uEmission.value = curveEmission * 1.2;
-        } else {
-            // MeshBasicMaterial - update opacity directly
-            fireball.innerFlameMaterial.opacity = curveAlpha * config.projectile.innerFlameOpacity;
+        // ========== UPDATE LAYER 2: Shell (MEDIUM) - Outer flame layer ==========
+        if (fireball.shellMaterial && fireball.shellMaterial.uniforms) {
+            const shellEasedTime = Math.pow(fireball.elapsedTime * config.projectile.innerFlameSpeed, 0.55);
+            fireball.shellTime = shellEasedTime * flipbookConfig.realisticFireballFrames;
+            fireball.shellMaterial.uniforms.uTime.value = fireball.shellTime;
+            fireball.shellMaterial.uniforms.uOpacity.value = curveAlpha * 0.6;
+            fireball.shellMaterial.uniforms.uEmission.value = curveEmission * 1.8;
         }
 
-        // SphereGeometry doesn't need lookAt - it's volumetric from all angles
-        // Just apply uniform scaling for the BMS hierarchy
+        // ========== UPDATE LAYER 3: Micro Particles (SMALL) - Orbiting particles ==========
+        if (fireball.microParticles) {
+            for (const particle of fireball.microParticles) {
+                // Update orbit position
+                particle.angle += deltaTime * particle.orbitSpeed;
+                particle.mesh.position.x = Math.cos(particle.angle) * particle.orbitRadius;
+                particle.mesh.position.y = Math.sin(particle.angle) * particle.orbitRadius * 0.5;
+                particle.mesh.position.z = Math.sin(particle.angle) * particle.orbitRadius * 0.3;
+                
+                // Update material
+                if (particle.material.uniforms) {
+                    particle.material.uniforms.uTime.value = fireball.coreTime;
+                    particle.material.uniforms.uOpacity.value = curveAlpha * 0.5;
+                }
+            }
+        }
+
+        // ========== UPDATE LAYER 4: Glow - Emissive bloom trigger ==========
+        if (fireball.glowMaterial && fireball.glowMaterial.uniforms) {
+            fireball.glowMaterial.uniforms.uTime.value = fireball.elapsedTime;
+            fireball.glowMaterial.uniforms.uOpacity.value = curveAlpha * 0.3;
+        }
+
+        // Billboard all layers to face camera
+        if (camera) {
+            fireball.coreMesh.lookAt(camera.position);
+            if (fireball.shellMesh) fireball.shellMesh.lookAt(camera.position);
+            if (fireball.glowMesh) fireball.glowMesh.lookAt(camera.position);
+            if (fireball.microParticles) {
+                for (const particle of fireball.microParticles) {
+                    particle.mesh.lookAt(camera.position);
+                }
+            }
+        }
+
+        // Apply uniform scaling for the BMS hierarchy
         fireball.coreMesh.scale.setScalar(safeScale);
-        fireball.innerFlameMesh.scale.setScalar(safeScale * 0.9);
+        if (fireball.shellMesh) fireball.shellMesh.scale.setScalar(safeScale * 1.1);
+        if (fireball.glowMesh) fireball.glowMesh.scale.setScalar(safeScale * 1.5);
 
         updateFireballTrail(fireball, deltaTime);
 
@@ -6272,6 +6555,7 @@ function updateFireballCameraShake(deltaTime) {
 function deactivateFireball(fireball) {
     fireball.active = false;
 
+    // Clean up flame particles (legacy)
     if (fireball.flameParticles) {
         for (const particle of fireball.flameParticles) {
             if (particle.active) {
@@ -6288,13 +6572,36 @@ function deactivateFireball(fireball) {
         fireball.flameParticles = [];
     }
 
+    // Clean up micro particles (Layer 3)
+    if (fireball.microParticles) {
+        for (const particle of fireball.microParticles) {
+            fireball.group.remove(particle.mesh);
+            particle.mesh.geometry.dispose();
+            particle.material.dispose();
+        }
+        fireball.microParticles = [];
+    }
+
     scene.remove(fireball.group);
     scene.remove(fireball.trailMesh);
 
+    // Clean up Layer 1: Core
     fireball.coreMesh.geometry.dispose();
     fireball.coreMaterial.dispose();
-    fireball.innerFlameMesh.geometry.dispose();
-    fireball.innerFlameMaterial.dispose();
+    
+    // Clean up Layer 2: Shell
+    if (fireball.shellMesh) {
+        fireball.shellMesh.geometry.dispose();
+        fireball.shellMaterial.dispose();
+    }
+    
+    // Clean up Layer 4: Glow
+    if (fireball.glowMesh) {
+        fireball.glowMesh.geometry.dispose();
+        fireball.glowMaterial.dispose();
+    }
+    
+    // Clean up Trail
     fireball.trailGeometry.dispose();
     fireball.trailMaterial.dispose();
 }
