@@ -6274,20 +6274,22 @@ function updateFireballVFX(deltaTime) {
             const screenY = travelDir.dot(cameraUp);
             
             // Calculate angle from screen-space direction
-            // The sprite's "head" points to the right (+X in UV space), so we need to rotate
-            // to align with the travel direction projected onto the screen
+            // The sprite's "head" points to the LEFT (-X in local space, angle = PI)
+            // Travel direction angle in screen space
             const angle = Math.atan2(screenY, screenX);
             
             // Apply Z rotation (around the view axis) to align head with travel direction
-            // Subtract PI/2 because the fireball sprite head points right, but atan2(0,1)=0
-            fireball.coreMesh.rotateZ(-angle + Math.PI / 2);
-            if (fireball.shellMesh) fireball.shellMesh.rotateZ(-angle + Math.PI / 2);
+            // Head is at angle PI (pointing left), travel is at angle `angle`
+            // To align head with travel: rotate by (angle - PI)
+            const rotationAngle = angle - Math.PI;
+            fireball.coreMesh.rotateZ(rotationAngle);
+            if (fireball.shellMesh) fireball.shellMesh.rotateZ(rotationAngle);
             // Glow doesn't need rotation (it's radially symmetric)
             
             if (fireball.microParticles) {
                 for (const particle of fireball.microParticles) {
                     particle.mesh.lookAt(camera.position);
-                    particle.mesh.rotateZ(-angle + Math.PI / 2);
+                    particle.mesh.rotateZ(rotationAngle);
                 }
             }
         }
