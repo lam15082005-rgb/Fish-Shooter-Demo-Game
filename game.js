@@ -4795,17 +4795,13 @@ const fireballVFXState = {
         fireballCore: null,
         innerFlame: null,
         flameParticle: null,
-        explosionCore: null,
-        explosionDebris: null,
         noise: null,
         spark: null
     },
     texturesLoaded: false,
     activeFireballs: [],
-    activeImpacts: [],
     activeSparks: [],
     activeFlameParticles: [],
-    activeDebrisParticles: [],
     trailGeometryCache: null,
     sparkGeometry: null,
     composer: null,
@@ -4818,6 +4814,111 @@ const fireballVFXState = {
     },
     distortionUniforms: null
 };
+
+// Effekseer VFX state for explosion effects
+const effekseerState = {
+    initialized: false,
+    context: null,
+    effects: {},
+    activeHandles: []
+};
+
+// Initialize Effekseer runtime for WebGL
+function initEffekseer() {
+    if (effekseerState.initialized || !renderer) return;
+    
+    // Check if effekseer is available
+    if (typeof effekseer === 'undefined') {
+        console.warn('Effekseer runtime not loaded');
+        return;
+    }
+    
+    effekseer.initRuntime('assets/effekseer/effekseer.wasm', () => {
+        effekseerState.context = effekseer.createContext();
+        effekseerState.context.init(renderer.getContext());
+        
+        // Enable fast rendering mode
+        effekseerState.context.setRestorationOfStatesFlag(false);
+        
+        // Load explosion effect (Simple_Ring_Shape1 for radial starburst)
+        effekseerState.effects.explosion = effekseerState.context.loadEffect(
+            'assets/effekseer/Resources/Simple_Ring_Shape1.efk',
+            3.0, // Scale up for visibility
+            () => {
+                console.log('Effekseer explosion effect loaded');
+            },
+            (msg, url) => {
+                console.error('Effekseer load error:', msg, url);
+            }
+        );
+        
+        // Also load ring shape 2 for variety
+        effekseerState.effects.explosionRing = effekseerState.context.loadEffect(
+            'assets/effekseer/Resources/Simple_Ring_Shape2.efk',
+            2.5
+        );
+        
+        effekseerState.initialized = true;
+        console.log('Effekseer initialized successfully');
+    }, () => {
+        console.error('Failed to initialize Effekseer runtime');
+    });
+}
+
+// Play Effekseer explosion at position
+function playEffekseerExplosion(position, scale = 1.0) {
+    if (!effekseerState.initialized || !effekseerState.context) return null;
+    
+    const effect = effekseerState.effects.explosion;
+    if (!effect) return null;
+    
+    // Play the effect at the given position
+    const handle = effekseerState.context.play(effect, position.x, position.y, position.z);
+    if (handle) {
+        handle.setScale(scale, scale, scale);
+        effekseerState.activeHandles.push({
+            handle: handle,
+            startTime: performance.now()
+        });
+    }
+    
+    return handle;
+}
+
+// Update Effekseer effects (call in render loop)
+function updateEffekseer(deltaTime) {
+    if (!effekseerState.initialized || !effekseerState.context) return;
+    
+    // Update Effekseer context (deltaTime in frames at 60fps)
+    effekseerState.context.update(deltaTime * 60.0);
+    
+    // Clean up finished effects
+    const now = performance.now();
+    for (let i = effekseerState.activeHandles.length - 1; i >= 0; i--) {
+        const item = effekseerState.activeHandles[i];
+        // Remove effects older than 2 seconds (they should be done by then)
+        if (now - item.startTime > 2000) {
+            effekseerState.activeHandles.splice(i, 1);
+        }
+    }
+}
+
+// Draw Effekseer effects (call after Three.js render)
+function drawEffekseer() {
+    if (!effekseerState.initialized || !effekseerState.context || !camera) return;
+    
+    // Set camera matrices for Effekseer
+    effekseerState.context.setProjectionMatrix(camera.projectionMatrix.elements);
+    effekseerState.context.setCameraMatrix(camera.matrixWorldInverse.elements);
+    
+    // Draw all effects
+    effekseerState.context.draw();
+    
+    // Reset Three.js state after Effekseer drawing
+    if (renderer) {
+        renderer.resetState();
+    }
+}
 
 // Load fireball VFX textures with proper settings (no mipmaps, linear filtering, clamp to edge)
 async function loadFireballVFXTextures() {
@@ -5947,203 +6048,154 @@ function spawnFlameParticles(fireball) {
     }
 }
 
-// Create 3-layer explosion: Core flash + Energy ring + Flame puffs
-// Short lifetime (< 0.4s), smooth expansion, no noisy alpha edges
+// Create explosion using Three.js radial starburst effect
+// Orange radial starburst explosion - small, sharp, high quality
 function createFireballImpact(position, direction) {
-    if (!fireballVFXState.texturesLoaded) return;
-
-    const config = FIREBALL_VFX_CONFIG.impact;
-    const flipbookConfig = FIREBALL_VFX_CONFIG.flipbook;
-
-    // LAYER 1: Core flash (bright center, quick fade)
-    const coreGeometry = new THREE.SphereGeometry(config.coreSize * 0.3, 16, 16);
-    const coreMaterial = new THREE.ShaderMaterial({
-        uniforms: {
-            uTime: { value: 0 },
-            uOpacity: { value: 1.0 },
-            uEmission: { value: 4.0 },
-            uColorHot: { value: new THREE.Color(1.0, 1.0, 0.9) },
-            uColorMid: { value: new THREE.Color(1.0, 0.7, 0.2) }
-        },
-        vertexShader: `
-            varying vec3 vNormal;
-            varying vec3 vViewDir;
-            void main() {
-                vNormal = normalize(normalMatrix * normal);
-                vec4 worldPos = modelMatrix * vec4(position, 1.0);
-                vViewDir = normalize(cameraPosition - worldPos.xyz);
-                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-            }
-        `,
-        fragmentShader: `
-            uniform float uTime;
-            uniform float uOpacity;
-            uniform float uEmission;
-            uniform vec3 uColorHot;
-            uniform vec3 uColorMid;
-            varying vec3 vNormal;
-            varying vec3 vViewDir;
-            void main() {
-                float NdotV = max(dot(vNormal, vViewDir), 0.0);
-                vec3 color = mix(uColorMid, uColorHot, NdotV);
-                float alpha = uOpacity * (0.8 + NdotV * 0.2);
-                gl_FragColor = vec4(color * uEmission, alpha);
-            }
-        `,
+    // Create radial starburst explosion group
+    const explosionGroup = new THREE.Group();
+    explosionGroup.position.copy(position);
+    scene.add(explosionGroup);
+    
+    // Store explosion data for animation
+    const explosionData = {
+        group: explosionGroup,
+        startTime: performance.now(),
+        duration: 350, // 0.35 seconds - short lifetime
+        rings: [],
+        rays: [],
+        core: null
+    };
+    
+    // 1. Core flash (bright orange center)
+    const coreGeometry = new THREE.SphereGeometry(8, 16, 16);
+    const coreMaterial = new THREE.MeshBasicMaterial({
+        color: 0xff6600,
         transparent: true,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false
+        opacity: 1.0,
+        blending: THREE.AdditiveBlending
     });
     const coreMesh = new THREE.Mesh(coreGeometry, coreMaterial);
-    coreMesh.position.copy(position);
-
-    // LAYER 2: Energy ring (expanding outward)
-    const ringGeometry = new THREE.RingGeometry(config.ringSize * 0.3, config.ringSize * 0.5, 32);
-    const ringMaterial = new THREE.ShaderMaterial({
-        uniforms: {
-            uTime: { value: 0 },
-            uOpacity: { value: 0.8 },
-            uColor: { value: new THREE.Color(1.0, 0.5, 0.1) }
-        },
-        vertexShader: `
-            varying vec2 vUv;
-            void main() {
-                vUv = uv;
-                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-            }
-        `,
-        fragmentShader: `
-            uniform float uTime;
-            uniform float uOpacity;
-            uniform vec3 uColor;
-            varying vec2 vUv;
-            void main() {
-                float alpha = uOpacity * smoothstep(0.0, 0.3, vUv.x) * smoothstep(1.0, 0.7, vUv.x);
-                gl_FragColor = vec4(uColor * 2.5, alpha);
-            }
-        `,
-        transparent: true,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        side: THREE.DoubleSide
-    });
-    const ringMesh = new THREE.Mesh(ringGeometry, ringMaterial);
-    ringMesh.position.copy(position);
-    ringMesh.rotation.x = -Math.PI / 2; // Horizontal ring
-
-    // LAYER 3: Flame puffs (expanding spheres)
-    const puffs = [];
-    for (let i = 0; i < config.puffCount; i++) {
-        const angle = (i / config.puffCount) * Math.PI * 2;
-        const puffGeometry = new THREE.SphereGeometry(config.puffSize * 0.3, 8, 8);
-        const puffMaterial = new THREE.ShaderMaterial({
-            uniforms: {
-                uTime: { value: 0 },
-                uOpacity: { value: 0.6 },
-                uEmission: { value: 2.0 },
-                uColor: { value: new THREE.Color(1.0, 0.4, 0.1) }
-            },
-            vertexShader: `
-                varying vec3 vNormal;
-                void main() {
-                    vNormal = normalize(normalMatrix * normal);
-                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-                }
-            `,
-            fragmentShader: `
-                uniform float uOpacity;
-                uniform float uEmission;
-                uniform vec3 uColor;
-                varying vec3 vNormal;
-                void main() {
-                    float rim = 1.0 - abs(dot(vNormal, vec3(0.0, 0.0, 1.0)));
-                    vec3 color = uColor * uEmission * (0.5 + rim * 0.5);
-                    gl_FragColor = vec4(color, uOpacity * (0.3 + rim * 0.7));
-                }
-            `,
+    explosionGroup.add(coreMesh);
+    explosionData.core = { mesh: coreMesh, material: coreMaterial };
+    
+    // 2. Expanding energy rings (2 rings for depth)
+    for (let i = 0; i < 2; i++) {
+        const ringGeometry = new THREE.RingGeometry(5 + i * 8, 10 + i * 10, 32);
+        const ringMaterial = new THREE.MeshBasicMaterial({
+            color: i === 0 ? 0xff8800 : 0xff4400,
             transparent: true,
-            blending: THREE.AdditiveBlending,
-            depthWrite: false
+            opacity: 0.8,
+            side: THREE.DoubleSide,
+            blending: THREE.AdditiveBlending
         });
-        const puffMesh = new THREE.Mesh(puffGeometry, puffMaterial);
-        puffMesh.position.copy(position);
-        
-        const velocity = new THREE.Vector3(
-            Math.cos(angle) * config.puffSpeed,
-            Math.random() * config.puffSpeed * 0.3,
-            Math.sin(angle) * config.puffSpeed
-        );
-        
-        puffs.push({
-            mesh: puffMesh,
-            material: puffMaterial,
-            velocity: velocity,
-            lifetime: config.puffLifetime
-        });
-        scene.add(puffMesh);
+        const ringMesh = new THREE.Mesh(ringGeometry, ringMaterial);
+        ringMesh.lookAt(camera.position);
+        explosionGroup.add(ringMesh);
+        explosionData.rings.push({ mesh: ringMesh, material: ringMaterial, initialScale: 1 + i * 0.3 });
     }
-
-    const impact = {
-        // Layer 1: Core flash
-        coreMesh: coreMesh,
-        coreMaterial: coreMaterial,
-        // Layer 2: Energy ring
-        ringMesh: ringMesh,
-        ringMaterial: ringMaterial,
-        // Layer 3: Flame puffs
-        puffs: puffs,
-        position: position.clone(),
-        lifetime: config.duration,
-        maxLifetime: config.duration,
-        elapsedTime: 0,
-        debrisParticles: [],
-        active: true
-    };
-
-    scene.add(coreMesh);
-    scene.add(ringMesh);
-    fireballVFXState.activeImpacts.push(impact);
-
-    spawnDebrisParticles(impact, position);
-    spawnFireballSparks(position, direction, config.sparkBurstCount);
+    
+    // 3. Radial starburst rays (8 rays emanating from center)
+    const rayCount = 8;
+    for (let i = 0; i < rayCount; i++) {
+        const angle = (i / rayCount) * Math.PI * 2;
+        const rayLength = 25 + Math.random() * 15;
+        const rayWidth = 3 + Math.random() * 2;
+        
+        const rayGeometry = new THREE.PlaneGeometry(rayWidth, rayLength);
+        const rayMaterial = new THREE.MeshBasicMaterial({
+            color: 0xffaa00,
+            transparent: true,
+            opacity: 0.9,
+            side: THREE.DoubleSide,
+            blending: THREE.AdditiveBlending
+        });
+        const rayMesh = new THREE.Mesh(rayGeometry, rayMaterial);
+        
+        // Position ray emanating from center
+        rayMesh.position.set(
+            Math.cos(angle) * rayLength * 0.5,
+            Math.sin(angle) * rayLength * 0.5,
+            0
+        );
+        rayMesh.rotation.z = angle + Math.PI / 2;
+        rayMesh.lookAt(camera.position);
+        rayMesh.rotateZ(angle);
+        
+        explosionGroup.add(rayMesh);
+        explosionData.rays.push({ 
+            mesh: rayMesh, 
+            material: rayMaterial, 
+            angle: angle,
+            length: rayLength,
+            speed: 80 + Math.random() * 40
+        });
+    }
+    
+    // Add to active explosions for animation
+    fireballVFXState.activeExplosions = fireballVFXState.activeExplosions || [];
+    fireballVFXState.activeExplosions.push(explosionData);
+    
+    // Also spawn some sparks for additional detail
+    spawnFireballSparks(position, direction, 8);
     triggerFireballCameraShake();
-
-    return impact;
 }
 
-function spawnDebrisParticles(impact, position) {
-    const config = FIREBALL_VFX_CONFIG.impact;
+// Update radial starburst explosions
+function updateRadialExplosions(deltaTime) {
+    if (!fireballVFXState.activeExplosions) return;
     
-    for (let i = 0; i < config.debrisCount; i++) {
-        const angle = (i / config.debrisCount) * Math.PI * 2 + Math.random() * 0.5;
-        const speed = config.debrisSpeed * (0.7 + Math.random() * 0.6);
+    const now = performance.now();
+    
+    for (let i = fireballVFXState.activeExplosions.length - 1; i >= 0; i--) {
+        const explosion = fireballVFXState.activeExplosions[i];
+        const elapsed = now - explosion.startTime;
+        const progress = Math.min(elapsed / explosion.duration, 1.0);
         
-        const geometry = new THREE.PlaneGeometry(config.debrisSize, config.debrisSize);
-        const material = createFlameParticleMaterial(fireballVFXState.textures.explosionDebris);
-        const mesh = new THREE.Mesh(geometry, material);
+        if (progress >= 1.0) {
+            // Remove explosion
+            scene.remove(explosion.group);
+            explosion.group.traverse((child) => {
+                if (child.geometry) child.geometry.dispose();
+                if (child.material) child.material.dispose();
+            });
+            fireballVFXState.activeExplosions.splice(i, 1);
+            continue;
+        }
         
-        mesh.position.copy(position);
-        mesh.userData.randomZRotation = Math.random() * Math.PI * 2;
+        // Smooth expansion curve
+        const expandProgress = 1 - Math.pow(1 - progress, 2);
+        const fadeProgress = Math.pow(progress, 0.5);
         
-        const velocity = new THREE.Vector3(
-            Math.cos(angle) * speed,
-            Math.random() * speed * 0.5,
-            Math.sin(angle) * speed
-        );
+        // Update core (shrink and fade)
+        if (explosion.core) {
+            const coreScale = 1.5 * (1 - progress * 0.7);
+            explosion.core.mesh.scale.setScalar(coreScale);
+            explosion.core.material.opacity = 1.0 - fadeProgress;
+        }
         
-        const particle = {
-            mesh: mesh,
-            material: material,
-            velocity: velocity,
-            lifetime: config.debrisLifetime,
-            maxLifetime: config.debrisLifetime,
-            elapsedTime: 0,
-            active: true
-        };
+        // Update rings (expand and fade)
+        for (const ring of explosion.rings) {
+            const ringScale = ring.initialScale + expandProgress * 3;
+            ring.mesh.scale.setScalar(ringScale);
+            ring.material.opacity = 0.8 * (1 - fadeProgress);
+            if (camera) ring.mesh.lookAt(camera.position);
+        }
         
-        scene.add(mesh);
-        impact.debrisParticles.push(particle);
-        fireballVFXState.activeDebrisParticles.push(particle);
+        // Update rays (expand outward and fade)
+        for (const ray of explosion.rays) {
+            const rayExpand = expandProgress * ray.speed * 0.01;
+            ray.mesh.position.set(
+                Math.cos(ray.angle) * ray.length * 0.5 * (1 + rayExpand),
+                Math.sin(ray.angle) * ray.length * 0.5 * (1 + rayExpand),
+                0
+            );
+            ray.mesh.scale.set(1 + rayExpand * 0.5, 1 + rayExpand, 1);
+            ray.material.opacity = 0.9 * (1 - fadeProgress);
+            if (camera) {
+                ray.mesh.lookAt(camera.position);
+                ray.mesh.rotateZ(ray.angle);
+            }
+        }
     }
 }
 
@@ -6310,69 +6362,8 @@ function updateFireballVFX(deltaTime) {
         fireball.trailMaterial.uniforms.uTime.value += deltaTime;
     }
 
-    // Update active impacts - 3-layer explosion (core flash + energy ring + flame puffs)
-    for (let i = fireballVFXState.activeImpacts.length - 1; i >= 0; i--) {
-        const impact = fireballVFXState.activeImpacts[i];
-        if (!impact.active) continue;
-
-        impact.lifetime -= deltaTime;
-        impact.elapsedTime = (impact.elapsedTime || 0) + deltaTime;
-        const lifeProgress = Math.min(1, impact.elapsedTime / impact.maxLifetime);
-
-        if (impact.lifetime <= 0) {
-            // Clean up Layer 1: Core flash
-            if (impact.coreMesh) {
-                scene.remove(impact.coreMesh);
-                impact.coreMesh.geometry.dispose();
-                impact.coreMaterial.dispose();
-            }
-            // Clean up Layer 2: Energy ring
-            if (impact.ringMesh) {
-                scene.remove(impact.ringMesh);
-                impact.ringMesh.geometry.dispose();
-                impact.ringMaterial.dispose();
-            }
-            // Clean up Layer 3: Flame puffs
-            if (impact.puffs) {
-                for (const puff of impact.puffs) {
-                    scene.remove(puff.mesh);
-                    puff.mesh.geometry.dispose();
-                    puff.material.dispose();
-                }
-            }
-            fireballVFXState.activeImpacts.splice(i, 1);
-            continue;
-        }
-
-        // Smooth expansion curve (ease out)
-        const expansionCurve = 1.0 - Math.pow(1.0 - lifeProgress, 2.0);
-        const fadeOut = 1.0 - lifeProgress;
-
-        // Layer 1: Core flash - quick bright flash that fades
-        if (impact.coreMesh && impact.coreMaterial) {
-            const coreScale = 1.0 + expansionCurve * (config.impact.scaleUp - 1.0);
-            impact.coreMesh.scale.setScalar(coreScale);
-            impact.coreMaterial.uniforms.uOpacity.value = fadeOut * fadeOut; // Quick fade
-            impact.coreMaterial.uniforms.uEmission.value = 4.0 * fadeOut;
-        }
-
-        // Layer 2: Energy ring - expands outward
-        if (impact.ringMesh && impact.ringMaterial) {
-            const ringScale = 0.5 + expansionCurve * 2.5;
-            impact.ringMesh.scale.setScalar(ringScale);
-            impact.ringMaterial.uniforms.uOpacity.value = fadeOut * 0.8;
-        }
-
-        // Layer 3: Flame puffs - move outward and fade
-        if (impact.puffs) {
-            for (const puff of impact.puffs) {
-                puff.mesh.position.add(puff.velocity.clone().multiplyScalar(deltaTime));
-                const puffScale = 1.0 + expansionCurve * 0.5;
-                puff.mesh.scale.setScalar(puffScale);
-                puff.material.uniforms.uOpacity.value = fadeOut * 0.6;
-            }
-        }
-    }
+    // Update radial starburst explosions
+    updateRadialExplosions(deltaTime);
 
     // Update active sparks
     const sparkConfig = config.sparks;
@@ -6453,34 +6444,7 @@ function updateFireballVFX(deltaTime) {
         }
     }
 
-    for (let i = fireballVFXState.activeDebrisParticles.length - 1; i >= 0; i--) {
-        const particle = fireballVFXState.activeDebrisParticles[i];
-        if (!particle.active) continue;
-
-        particle.elapsedTime += deltaTime;
-        particle.lifetime -= deltaTime;
-        const lifeProgress = particle.elapsedTime / particle.maxLifetime;
-
-        if (particle.lifetime <= 0) {
-            scene.remove(particle.mesh);
-            particle.mesh.geometry.dispose();
-            particle.material.dispose();
-            fireballVFXState.activeDebrisParticles.splice(i, 1);
-            continue;
-        }
-
-        particle.velocity.y -= 200 * deltaTime;
-        particle.mesh.position.add(particle.velocity.clone().multiplyScalar(deltaTime));
-
-        particle.material.uniforms.uLifeProgress.value = lifeProgress;
-        const fadeAlpha = 1.0 - Math.pow(lifeProgress, 0.5);
-        particle.material.uniforms.uOpacity.value = fadeAlpha;
-
-        if (camera) {
-            particle.mesh.lookAt(camera.position);
-            particle.mesh.rotateZ(particle.mesh.userData.randomZRotation);
-        }
-    }
+    // Old debris particles update removed - now using Effekseer for explosions
 
     for (const fireball of fireballVFXState.activeFireballs) {
         if (!fireball.active) continue;
@@ -10542,6 +10506,9 @@ function initGameScene() {
     }
 
     document.getElementById('game-container').appendChild(renderer.domElement);
+
+    // Initialize Effekseer for explosion effects
+    initEffekseer();
 
     // Raycaster for shooting
     raycaster = new THREE.Raycaster();
@@ -18302,6 +18269,9 @@ function animate() {
 
         // Render
         renderer.render(scene, camera);
+        
+        // Note: Effekseer draw disabled - using Three.js radial starburst explosion instead
+        // drawEffekseer();
 }
 
 // PERFORMANCE FIX: Cache seaweed and caustic light references to avoid iterating all children every frame
