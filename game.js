@@ -4840,22 +4840,16 @@ function initEffekseer() {
         // Enable fast rendering mode
         effekseerState.context.setRestorationOfStatesFlag(false);
         
-        // Load explosion effect (Simple_Ring_Shape1 for radial starburst)
-        effekseerState.effects.explosion = effekseerState.context.loadEffect(
-            'assets/effekseer/Resources/Simple_Ring_Shape1.efk',
-            3.0, // Scale up for visibility
+        // Load smoke effect for fish death (user-provided .efkefc file)
+        effekseerState.effects.smoke = effekseerState.context.loadEffect(
+            'assets/effekseer/smoke_effect.efkefc',
+            1.0, // Base scale
             () => {
-                console.log('Effekseer explosion effect loaded');
+                console.log('Effekseer smoke effect loaded successfully');
             },
             (msg, url) => {
-                console.error('Effekseer load error:', msg, url);
+                console.error('Effekseer smoke load error:', msg, url);
             }
-        );
-        
-        // Also load ring shape 2 for variety
-        effekseerState.effects.explosionRing = effekseerState.context.loadEffect(
-            'assets/effekseer/Resources/Simple_Ring_Shape2.efk',
-            2.5
         );
         
         effekseerState.initialized = true;
@@ -4865,24 +4859,51 @@ function initEffekseer() {
     });
 }
 
-// Play Effekseer explosion at position
-function playEffekseerExplosion(position, scale = 1.0) {
-    if (!effekseerState.initialized || !effekseerState.context) return null;
-    
-    const effect = effekseerState.effects.explosion;
-    if (!effect) return null;
-    
-    // Play the effect at the given position
-    const handle = effekseerState.context.play(effect, position.x, position.y, position.z);
-    if (handle) {
-        handle.setScale(scale, scale, scale);
-        effekseerState.activeHandles.push({
-            handle: handle,
-            startTime: performance.now()
-        });
+// Play Effekseer smoke effect at position (for fish death)
+function playEffekseerSmoke(position, scale = 1.0) {
+    if (!effekseerState.initialized || !effekseerState.context) {
+        console.warn('Effekseer not initialized');
+        return null;
     }
     
-    return handle;
+    const effect = effekseerState.effects.smoke;
+    if (!effect) {
+        console.warn('Effekseer smoke effect not loaded');
+        return null;
+    }
+    
+    // Check if effect is fully loaded before playing
+    if (!effect.isLoaded) {
+        console.warn('Effekseer smoke effect still loading');
+        return null;
+    }
+    
+    try {
+        // Reset Three.js state before Effekseer operations
+        if (renderer) {
+            renderer.resetState();
+        }
+        
+        // Play the effect at the given position
+        const handle = effekseerState.context.play(effect, position.x, position.y, position.z);
+        if (handle) {
+            handle.setScale(scale, scale, scale);
+            effekseerState.activeHandles.push({
+                handle: handle,
+                startTime: performance.now()
+            });
+            return handle;
+        }
+    } catch (error) {
+        console.error('Effekseer smoke play error:', error);
+    }
+    
+    return null;
+}
+
+// Alias for backward compatibility
+function playEffekseerExplosion(position, scale = 1.0) {
+    return playEffekseerSmoke(position, scale);
 }
 
 // Update Effekseer effects (call in render loop)
@@ -4906,6 +4927,9 @@ function updateEffekseer(deltaTime) {
 // Draw Effekseer effects (call after Three.js render)
 function drawEffekseer() {
     if (!effekseerState.initialized || !effekseerState.context || !camera) return;
+    
+    // Ensure camera matrices are up to date
+    camera.updateMatrixWorld();
     
     // Set camera matrices for Effekseer
     effekseerState.context.setProjectionMatrix(camera.projectionMatrix.elements);
@@ -6048,155 +6072,16 @@ function spawnFlameParticles(fireball) {
     }
 }
 
-// Create explosion using Three.js radial starburst effect
-// Orange radial starburst explosion - small, sharp, high quality
+// Create explosion using Effekseer effect
+// Uses official Hanmado hit effect (runtime-ready .efkefc)
 function createFireballImpact(position, direction) {
-    // Create radial starburst explosion group
-    const explosionGroup = new THREE.Group();
-    explosionGroup.position.copy(position);
-    scene.add(explosionGroup);
-    
-    // Store explosion data for animation
-    const explosionData = {
-        group: explosionGroup,
-        startTime: performance.now(),
-        duration: 350, // 0.35 seconds - short lifetime
-        rings: [],
-        rays: [],
-        core: null
-    };
-    
-    // 1. Core flash (bright orange center)
-    const coreGeometry = new THREE.SphereGeometry(8, 16, 16);
-    const coreMaterial = new THREE.MeshBasicMaterial({
-        color: 0xff6600,
-        transparent: true,
-        opacity: 1.0,
-        blending: THREE.AdditiveBlending
-    });
-    const coreMesh = new THREE.Mesh(coreGeometry, coreMaterial);
-    explosionGroup.add(coreMesh);
-    explosionData.core = { mesh: coreMesh, material: coreMaterial };
-    
-    // 2. Expanding energy rings (2 rings for depth)
-    for (let i = 0; i < 2; i++) {
-        const ringGeometry = new THREE.RingGeometry(5 + i * 8, 10 + i * 10, 32);
-        const ringMaterial = new THREE.MeshBasicMaterial({
-            color: i === 0 ? 0xff8800 : 0xff4400,
-            transparent: true,
-            opacity: 0.8,
-            side: THREE.DoubleSide,
-            blending: THREE.AdditiveBlending
-        });
-        const ringMesh = new THREE.Mesh(ringGeometry, ringMaterial);
-        ringMesh.lookAt(camera.position);
-        explosionGroup.add(ringMesh);
-        explosionData.rings.push({ mesh: ringMesh, material: ringMaterial, initialScale: 1 + i * 0.3 });
-    }
-    
-    // 3. Radial starburst rays (8 rays emanating from center)
-    const rayCount = 8;
-    for (let i = 0; i < rayCount; i++) {
-        const angle = (i / rayCount) * Math.PI * 2;
-        const rayLength = 25 + Math.random() * 15;
-        const rayWidth = 3 + Math.random() * 2;
-        
-        const rayGeometry = new THREE.PlaneGeometry(rayWidth, rayLength);
-        const rayMaterial = new THREE.MeshBasicMaterial({
-            color: 0xffaa00,
-            transparent: true,
-            opacity: 0.9,
-            side: THREE.DoubleSide,
-            blending: THREE.AdditiveBlending
-        });
-        const rayMesh = new THREE.Mesh(rayGeometry, rayMaterial);
-        
-        // Position ray emanating from center
-        rayMesh.position.set(
-            Math.cos(angle) * rayLength * 0.5,
-            Math.sin(angle) * rayLength * 0.5,
-            0
-        );
-        rayMesh.rotation.z = angle + Math.PI / 2;
-        rayMesh.lookAt(camera.position);
-        rayMesh.rotateZ(angle);
-        
-        explosionGroup.add(rayMesh);
-        explosionData.rays.push({ 
-            mesh: rayMesh, 
-            material: rayMaterial, 
-            angle: angle,
-            length: rayLength,
-            speed: 80 + Math.random() * 40
-        });
-    }
-    
-    // Add to active explosions for animation
-    fireballVFXState.activeExplosions = fireballVFXState.activeExplosions || [];
-    fireballVFXState.activeExplosions.push(explosionData);
+    // Play Effekseer explosion effect at the collision position
+    // Scale 0.4 for small gameplay size (not cinematic Hollywood scale)
+    playEffekseerExplosion(position, 0.4);
     
     // Also spawn some sparks for additional detail
     spawnFireballSparks(position, direction, 8);
     triggerFireballCameraShake();
-}
-
-// Update radial starburst explosions
-function updateRadialExplosions(deltaTime) {
-    if (!fireballVFXState.activeExplosions) return;
-    
-    const now = performance.now();
-    
-    for (let i = fireballVFXState.activeExplosions.length - 1; i >= 0; i--) {
-        const explosion = fireballVFXState.activeExplosions[i];
-        const elapsed = now - explosion.startTime;
-        const progress = Math.min(elapsed / explosion.duration, 1.0);
-        
-        if (progress >= 1.0) {
-            // Remove explosion
-            scene.remove(explosion.group);
-            explosion.group.traverse((child) => {
-                if (child.geometry) child.geometry.dispose();
-                if (child.material) child.material.dispose();
-            });
-            fireballVFXState.activeExplosions.splice(i, 1);
-            continue;
-        }
-        
-        // Smooth expansion curve
-        const expandProgress = 1 - Math.pow(1 - progress, 2);
-        const fadeProgress = Math.pow(progress, 0.5);
-        
-        // Update core (shrink and fade)
-        if (explosion.core) {
-            const coreScale = 1.5 * (1 - progress * 0.7);
-            explosion.core.mesh.scale.setScalar(coreScale);
-            explosion.core.material.opacity = 1.0 - fadeProgress;
-        }
-        
-        // Update rings (expand and fade)
-        for (const ring of explosion.rings) {
-            const ringScale = ring.initialScale + expandProgress * 3;
-            ring.mesh.scale.setScalar(ringScale);
-            ring.material.opacity = 0.8 * (1 - fadeProgress);
-            if (camera) ring.mesh.lookAt(camera.position);
-        }
-        
-        // Update rays (expand outward and fade)
-        for (const ray of explosion.rays) {
-            const rayExpand = expandProgress * ray.speed * 0.01;
-            ray.mesh.position.set(
-                Math.cos(ray.angle) * ray.length * 0.5 * (1 + rayExpand),
-                Math.sin(ray.angle) * ray.length * 0.5 * (1 + rayExpand),
-                0
-            );
-            ray.mesh.scale.set(1 + rayExpand * 0.5, 1 + rayExpand, 1);
-            ray.material.opacity = 0.9 * (1 - fadeProgress);
-            if (camera) {
-                ray.mesh.lookAt(camera.position);
-                ray.mesh.rotateZ(ray.angle);
-            }
-        }
-    }
 }
 
 // Trigger camera shake on impact
@@ -6362,8 +6247,8 @@ function updateFireballVFX(deltaTime) {
         fireball.trailMaterial.uniforms.uTime.value += deltaTime;
     }
 
-    // Update radial starburst explosions
-    updateRadialExplosions(deltaTime);
+    // Update Effekseer explosion effects
+    updateEffekseer(deltaTime);
 
     // Update active sparks
     const sparkConfig = config.sparks;
@@ -9154,7 +9039,15 @@ class SmokeEffect {
 }
 
 // Spawn smoke effect at position with optional scale
+// Uses Effekseer smoke effect if available, falls back to Three.js SmokeEffect
 function spawnSmokeEffect(position, scale = 1.0) {
+    // Try to use Effekseer smoke effect first
+    const effekseerHandle = playEffekseerSmoke(position, scale);
+    if (effekseerHandle) {
+        return effekseerHandle;
+    }
+    
+    // Fallback to Three.js smoke effect
     const smoke = new SmokeEffect(position, scale);
     activeSmokeEffects.push(smoke);
     return smoke;
@@ -18270,8 +18163,8 @@ function animate() {
         // Render
         renderer.render(scene, camera);
         
-        // Note: Effekseer draw disabled - using Three.js radial starburst explosion instead
-        // drawEffekseer();
+        // Draw Effekseer effects after Three.js render
+        drawEffekseer();
 }
 
 // PERFORMANCE FIX: Cache seaweed and caustic light references to avoid iterating all children every frame
